@@ -216,7 +216,7 @@ def main():
             st.divider()
 
             # Full expense form
-            if expense_input_form():
+            if expense_input_form(df):
                 st.rerun()  # Refresh to show new data
         else:
             st.info("🔑 請先設定 Google Sheets API 以啟用記錄功能")

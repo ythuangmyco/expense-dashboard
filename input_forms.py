@@ -7,6 +7,8 @@ import streamlit as st
 from datetime import datetime, date
 from sheets_api import get_sheets_api
 import pandas as pd
+import re
+from PIL import Image
 
 # Categories and locations from your original Google Form
 DAILY_CATEGORIES = {
@@ -59,6 +61,86 @@ KOREA_LOCATIONS = ["首爾"]
 
 ACCOUNTS = ["菇菇", "過兒"]
 
+def extract_amount_from_image(filename):
+    """Try to extract amount from image filename or basic analysis"""
+    try:
+        # Look for numbers in filename that might be amounts
+        numbers = re.findall(r'\d+', filename)
+        if numbers:
+            # Look for reasonable amounts (between 10 and 10000)
+            for num in numbers:
+                amount = int(num)
+                if 10 <= amount <= 10000:
+                    return amount
+        return None
+    except:
+        return None
+
+def get_smart_suggestions(df, category_type):
+    """Generate smart suggestions based on historical data"""
+    if df.empty:
+        return {}
+
+    # Filter by category type
+    category_df = df[df['category_type'] == category_type]
+
+    suggestions = {}
+
+    # Most common descriptions for this category
+    descriptions = category_df['description'].value_counts().head(5)
+    suggestions['descriptions'] = descriptions.index.tolist()
+
+    # Most common amounts for this category
+    amounts = category_df['amount'].value_counts().head(3)
+    suggestions['amounts'] = amounts.index.tolist()
+
+    # Average amount
+    suggestions['avg_amount'] = int(category_df['amount'].mean()) if not category_df.empty else 0
+
+    # Most common locations
+    locations = category_df['location'].value_counts().head(3)
+    suggestions['locations'] = locations.index.tolist()
+
+    return suggestions
+
+def show_smart_suggestions(df, category_type):
+    """Display smart suggestions based on user patterns"""
+    suggestions = get_smart_suggestions(df, category_type)
+
+    if suggestions:
+        with st.expander("💡 智慧建議 (基於您的記錄)"):
+            col1, col2 = st.columns(2)
+
+            with col1:
+                if suggestions.get('descriptions'):
+                    st.write("**常見項目:**")
+                    for desc in suggestions['descriptions'][:3]:
+                        if st.button(f"📝 {desc}", key=f"suggest_desc_{desc}"):
+                            st.session_state['suggested_description'] = desc
+
+            with col2:
+                if suggestions.get('amounts'):
+                    st.write("**常見金額:**")
+                    for amount in suggestions['amounts'][:3]:
+                        if st.button(f"💰 NT${int(amount)}", key=f"suggest_amt_{amount}"):
+                            st.session_state['suggested_amount'] = int(amount)
+
+            # Show average
+            if suggestions.get('avg_amount'):
+                st.info(f"📊 此類別平均金額: NT${suggestions['avg_amount']}")
+
+def get_auto_complete_options(df, field_name):
+    """Get auto-complete options for input fields"""
+    if df.empty:
+        return []
+
+    if field_name == 'description':
+        return df['description'].value_counts().head(20).index.tolist()
+    elif field_name == 'location':
+        return df['location'].value_counts().head(10).index.tolist()
+
+    return []
+
 # Quick entry favorites (common expenses)
 QUICK_FAVORITES = {
     "☕ 咖啡": {"category_emoji": "📅 日常", "category_type": "🍽️ 飲食", "amount": 150, "description": "咖啡"},
@@ -108,7 +190,7 @@ def create_quick_expense(favorite_data):
     })
     return True
 
-def expense_input_form():
+def expense_input_form(df=None):
     """Main expense input form with mobile-first design"""
 
     st.subheader("📝 新增支出")
@@ -151,14 +233,28 @@ def expense_input_form():
                 key="form_category_detail"
             )
 
+        # Show smart suggestions if historical data is available
+        if df is not None and not df.empty:
+            show_smart_suggestions(df, category_detail)
+
         # Amount and account
         col1, col2 = st.columns(2)
 
         with col1:
+            # Use suggested amount if available
+            suggested_amount = st.session_state.get('suggested_amount', 0)
+            default_amount = 0
+            if quick_entry:
+                default_amount = st.session_state.get('quick_amount', 0)
+            elif suggested_amount:
+                default_amount = suggested_amount
+                # Clear suggestion after use
+                st.session_state.pop('suggested_amount', None)
+
             amount = st.number_input(
                 "金額 (NT$)",
                 min_value=0,
-                value=st.session_state.get('quick_amount', 0) if quick_entry else 0,
+                value=default_amount,
                 step=1,
                 key="form_amount"
             )
@@ -172,9 +268,18 @@ def expense_input_form():
             )
 
         # Description
+        suggested_description = st.session_state.get('suggested_description', '')
+        default_description = ''
+        if quick_entry:
+            default_description = st.session_state.get('quick_description', '')
+        elif suggested_description:
+            default_description = suggested_description
+            # Clear suggestion after use
+            st.session_state.pop('suggested_description', None)
+
         description = st.text_input(
             "項目名稱",
-            value=st.session_state.get('quick_description', '') if quick_entry else '',
+            value=default_description,
             placeholder="例：午餐、停車費、咖啡...",
             key="form_description"
         )
@@ -213,6 +318,30 @@ def expense_input_form():
             height=80,
             key="form_notes"
         )
+
+        # Receipt photo upload
+        st.divider()
+
+        with st.expander("📸 上傳收據照片 (選填)"):
+            uploaded_file = st.file_uploader(
+                "選擇收據照片",
+                type=['png', 'jpg', 'jpeg'],
+                help="可上傳收據照片作為記錄",
+                key="form_receipt"
+            )
+
+            if uploaded_file is not None:
+                # Display image
+                image = Image.open(uploaded_file)
+                st.image(image, caption="收據照片", width=300)
+
+                # Try to extract amount from filename or basic analysis
+                extracted_amount = extract_amount_from_image(uploaded_file.name)
+                if extracted_amount and not st.session_state.get('form_amount', 0):
+                    st.info(f"💡 偵測到可能金額: NT${extracted_amount}")
+                    if st.button("套用偵測金額"):
+                        st.session_state['form_amount'] = extracted_amount
+                        st.rerun()
 
         # Submit button
         submitted = st.form_submit_button(
