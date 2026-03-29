@@ -1,0 +1,376 @@
+"""
+Mobile-First Expense Input Forms
+Enhanced UX for quick expense entry
+"""
+
+import streamlit as st
+from datetime import datetime, date
+from sheets_api import get_sheets_api
+import pandas as pd
+
+# Categories and locations from your original Google Form
+DAILY_CATEGORIES = {
+    "🍽️ 飲食": "🍽️ 飲食",
+    "🚗 交通": "🚗 交通",
+    "👶 寶寶": "👶 寶寶",
+    "🧴 日用": "🧴 日用",
+    "🏥 醫療": "🏥 醫療",
+    "📚 教育": "📚 教育",
+    "🏠 住宿": "🏠 住宿",
+    "🎫 門票": "🎫 門票",
+    "👕 服飾": "👕 服飾",
+    "🎮 娛樂": "🎮 娛樂",
+    "💄 美容": "💄 美容",
+    "💰 稅務": "💰 稅務",
+    "📞 通訊": "📞 通訊",
+    "🏡 房屋": "🏡 房屋",
+    "🎁 禮物": "🎁 禮物",
+    "🐕 寵物": "🐕 寵物",
+    "🚗 保險": "🚗 保險"
+}
+
+TRAVEL_CATEGORIES = {
+    "✈️ 交通": "✈️ 交通",
+    "🍽️ 飲食": "🍽️ 飲食",
+    "🏨 住宿": "🏨 住宿",
+    "🎫 門票": "🎫 門票",
+    "🛍️ 購物": "🛍️ 購物",
+    "🎮 娛樂": "🎮 娛樂"
+}
+
+COUNTRIES = {
+    "台灣": "台灣",
+    "日本": "日本",
+    "澳洲": "澳洲",
+    "加拿大": "加拿大",
+    "韓國": "韓國"
+}
+
+TAIWAN_LOCATIONS = [
+    "高雄", "臺南", "台中", "台北", "新北", "桃園", "新竹", "苗栗",
+    "彰化", "南投", "雲林", "嘉義", "屏東", "宜蘭", "花蓮", "台東",
+    "澎湖", "金門", "連江", "基隆"
+]
+
+JAPAN_LOCATIONS = ["九州", "沖繩"]
+AUSTRALIA_LOCATIONS = ["雪梨", "墨爾本"]
+CANADA_LOCATIONS = ["溫哥華"]
+KOREA_LOCATIONS = ["首爾"]
+
+ACCOUNTS = ["菇菇", "過兒"]
+
+# Quick entry favorites (common expenses)
+QUICK_FAVORITES = {
+    "☕ 咖啡": {"category_emoji": "📅 日常", "category_type": "🍽️ 飲食", "amount": 150, "description": "咖啡"},
+    "🚗 停車": {"category_emoji": "📅 日常", "category_type": "🚗 交通", "amount": 100, "description": "停車費"},
+    "⛽ 加油": {"category_emoji": "📅 日常", "category_type": "🚗 交通", "amount": 1200, "description": "加油"},
+    "🍱 午餐": {"category_emoji": "📅 日常", "category_type": "🍽️ 飲食", "amount": 300, "description": "午餐"},
+    "🥤 飲料": {"category_emoji": "📅 日常", "category_type": "🍽️ 飲食", "amount": 50, "description": "飲料"},
+    "🚇 捷運": {"category_emoji": "📅 日常", "category_type": "🚗 交通", "amount": 40, "description": "捷運"},
+    "🍼 奶粉": {"category_emoji": "📅 日常", "category_type": "👶 寶寶", "amount": 500, "description": "奶粉"},
+    "🛒 買菜": {"category_emoji": "📅 日常", "category_type": "🧴 日用", "amount": 200, "description": "買菜"}
+}
+
+def get_locations_for_country(country):
+    """Get location list based on selected country"""
+    locations_map = {
+        "台灣": TAIWAN_LOCATIONS,
+        "日本": JAPAN_LOCATIONS,
+        "澳洲": AUSTRALIA_LOCATIONS,
+        "加拿大": CANADA_LOCATIONS,
+        "韓國": KOREA_LOCATIONS
+    }
+    return locations_map.get(country, [])
+
+def quick_entry_section():
+    """Quick entry buttons for common expenses"""
+    st.subheader("⚡ 快速記帳")
+
+    # Create a grid of quick entry buttons
+    cols = st.columns(4)
+
+    for i, (name, data) in enumerate(QUICK_FAVORITES.items()):
+        with cols[i % 4]:
+            if st.button(name, key=f"quick_{i}", use_container_width=True):
+                return create_quick_expense(data)
+
+    return None
+
+def create_quick_expense(favorite_data):
+    """Create expense from quick entry data"""
+    # Set default values in session state
+    st.session_state.update({
+        'quick_category_emoji': favorite_data['category_emoji'],
+        'quick_category_type': favorite_data['category_type'],
+        'quick_amount': favorite_data['amount'],
+        'quick_description': favorite_data['description'],
+        'quick_entry_active': True
+    })
+    return True
+
+def expense_input_form():
+    """Main expense input form with mobile-first design"""
+
+    st.subheader("📝 新增支出")
+
+    # Check if this is a quick entry
+    quick_entry = st.session_state.get('quick_entry_active', False)
+
+    with st.form("expense_form", clear_on_submit=True):
+        # Date input
+        expense_date = st.date_input(
+            "日期",
+            value=date.today(),
+            key="form_date"
+        )
+
+        # Category selection
+        col1, col2 = st.columns(2)
+
+        with col1:
+            category_type = st.selectbox(
+                "類型",
+                ["📅 日常", "✈️ 旅遊"],
+                index=0,
+                key="form_category_type"
+            )
+
+        with col2:
+            # Select appropriate category list
+            if category_type == "📅 日常":
+                categories = DAILY_CATEGORIES
+            else:
+                categories = TRAVEL_CATEGORIES
+
+            category_detail = st.selectbox(
+                "分類",
+                list(categories.values()),
+                index=0 if not quick_entry else list(categories.values()).index(
+                    st.session_state.get('quick_category_type', list(categories.values())[0])
+                ),
+                key="form_category_detail"
+            )
+
+        # Amount and account
+        col1, col2 = st.columns(2)
+
+        with col1:
+            amount = st.number_input(
+                "金額 (NT$)",
+                min_value=0,
+                value=st.session_state.get('quick_amount', 0) if quick_entry else 0,
+                step=1,
+                key="form_amount"
+            )
+
+        with col2:
+            account = st.selectbox(
+                "帳戶",
+                ACCOUNTS,
+                index=0,
+                key="form_account"
+            )
+
+        # Description
+        description = st.text_input(
+            "項目名稱",
+            value=st.session_state.get('quick_description', '') if quick_entry else '',
+            placeholder="例：午餐、停車費、咖啡...",
+            key="form_description"
+        )
+
+        # Location
+        col1, col2 = st.columns(2)
+
+        with col1:
+            country = st.selectbox(
+                "國家",
+                list(COUNTRIES.keys()),
+                index=0,
+                key="form_country"
+            )
+
+        with col2:
+            locations = get_locations_for_country(country)
+            if locations:
+                location = st.selectbox(
+                    "地點",
+                    locations,
+                    index=0,
+                    key="form_location"
+                )
+            else:
+                location = st.text_input(
+                    "地點",
+                    placeholder="請輸入地點",
+                    key="form_location_text"
+                )
+
+        # Notes
+        notes = st.text_area(
+            "備註",
+            placeholder="其他說明...",
+            height=80,
+            key="form_notes"
+        )
+
+        # Submit button
+        submitted = st.form_submit_button(
+            "💰 記錄支出",
+            use_container_width=True,
+            type="primary"
+        )
+
+        if submitted:
+            # Clear quick entry flag
+            st.session_state['quick_entry_active'] = False
+
+            # Validate input
+            if amount <= 0:
+                st.error("請輸入有效的金額")
+                return False
+
+            if not description.strip():
+                st.error("請輸入項目名稱")
+                return False
+
+            # Prepare expense data
+            expense_data = {
+                'date': expense_date.strftime('%m/%d/%Y'),
+                'category_emoji': category_type,
+                'category_type': category_detail,
+                'amount': amount,
+                'account': account,
+                'description': description.strip(),
+                'country': country,
+                'location': location if locations else location,
+                'notes': notes.strip()
+            }
+
+            # Try to add to Google Sheets
+            if st.session_state.get('api_available', False):
+                sheets_api = get_sheets_api()
+                if sheets_api.add_expense(expense_data):
+                    st.success(f"✅ 成功記錄 NT${amount} - {description}")
+                    st.balloons()
+                    return True
+                else:
+                    st.error("❌ 記錄失敗，請檢查網路連線")
+                    return False
+            else:
+                st.warning("⚠️ 請先設定 Google Sheets API 以啟用記錄功能")
+                st.info("目前為僅讀取模式。請參考 GOOGLE_API_SETUP.md 設定說明")
+                return False
+
+    return False
+
+def edit_expense_form(df):
+    """Form for editing existing expenses"""
+
+    if df.empty:
+        st.info("沒有可編輯的記錄")
+        return
+
+    st.subheader("✏️ 編輯支出")
+
+    # Select expense to edit
+    recent_expenses = df.head(20).copy()
+    recent_expenses['display'] = (
+        recent_expenses['date'].dt.strftime('%m/%d') + " - " +
+        recent_expenses['description'] + " (NT$" +
+        recent_expenses['amount'].astype(str) + ")"
+    )
+
+    selected_display = st.selectbox(
+        "選擇要編輯的記錄",
+        recent_expenses['display'].tolist(),
+        key="edit_selector"
+    )
+
+    if selected_display:
+        # Get selected expense
+        selected_idx = recent_expenses[recent_expenses['display'] == selected_display].index[0]
+        expense = recent_expenses.loc[selected_idx]
+
+        # Show edit form
+        with st.form("edit_expense_form"):
+            st.write(f"**編輯記錄:** {expense['description']}")
+
+            # Edit fields
+            col1, col2 = st.columns(2)
+
+            with col1:
+                new_amount = st.number_input(
+                    "金額",
+                    value=float(expense['amount']),
+                    min_value=0,
+                    step=1
+                )
+
+            with col2:
+                new_account = st.selectbox(
+                    "帳戶",
+                    ACCOUNTS,
+                    index=ACCOUNTS.index(expense['account'])
+                )
+
+            new_description = st.text_input(
+                "項目名稱",
+                value=expense['description']
+            )
+
+            new_notes = st.text_area(
+                "備註",
+                value=expense.get('notes', ''),
+                height=60
+            )
+
+            # Action buttons
+            col1, col2 = st.columns(2)
+
+            with col1:
+                update_submitted = st.form_submit_button(
+                    "💾 更新",
+                    use_container_width=True
+                )
+
+            with col2:
+                delete_submitted = st.form_submit_button(
+                    "🗑️ 刪除",
+                    use_container_width=True
+                )
+
+            if update_submitted:
+                # Update expense
+                updated_data = {
+                    'date': expense['date'].strftime('%m/%d/%Y'),
+                    'category_emoji': expense['category_emoji'],
+                    'category_type': expense['category_type'],
+                    'amount': new_amount,
+                    'account': new_account,
+                    'description': new_description,
+                    'country': expense['country'],
+                    'location': expense['location'],
+                    'notes': new_notes
+                }
+
+                if st.session_state.get('api_available', False):
+                    sheets_api = get_sheets_api()
+                    if sheets_api.update_expense(selected_idx, updated_data):
+                        st.success("✅ 記錄已更新")
+                        st.rerun()
+                    else:
+                        st.error("❌ 更新失敗")
+                else:
+                    st.warning("⚠️ 需要 API 權限才能編輯")
+
+            elif delete_submitted:
+                if st.session_state.get('api_available', False):
+                    sheets_api = get_sheets_api()
+                    if sheets_api.delete_expense(selected_idx):
+                        st.success("✅ 記錄已刪除")
+                        st.rerun()
+                    else:
+                        st.error("❌ 刪除失敗")
+                else:
+                    st.warning("⚠️ 需要 API 權限才能刪除")

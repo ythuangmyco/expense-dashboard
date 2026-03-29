@@ -11,6 +11,8 @@ from plotly.subplots import make_subplots
 import requests
 from datetime import datetime, timedelta
 import numpy as np
+from sheets_api import get_sheets_api
+from input_forms import quick_entry_section, expense_input_form, edit_expense_form
 
 # Page configuration
 st.set_page_config(
@@ -112,11 +114,25 @@ st.markdown("""
 SHEET_URL = "https://docs.google.com/spreadsheets/d/16JzKmS8Jq9H6NmjrpKkqBqNfnXkC_gfPiMV6Y6qP_kQ/export?format=csv&gid=720407773"
 
 # Cache data loading function
-@st.cache_data(ttl=300)  # Cache for 5 minutes
+@st.cache_data(ttl=60)  # Cache for 1 minute (shorter for real-time updates)
 def load_expense_data():
-    """Load expense data from Google Sheets"""
+    """Load expense data from Google Sheets (API or CSV fallback)"""
+
+    # Try Google Sheets API first (for read/write capabilities)
     try:
-        # Load data from Google Sheets CSV export
+        sheets_api = get_sheets_api()
+        if sheets_api.authenticate():
+            df = sheets_api.read_data()
+            if not df.empty:
+                st.session_state['api_available'] = True
+                return df
+    except Exception as e:
+        st.session_state['api_available'] = False
+        # Fall back to CSV if API fails
+
+    # Fallback to CSV export (read-only)
+    try:
+        st.session_state['api_available'] = False
         df = pd.read_csv(SHEET_URL)
 
         # Clean column names (remove extra spaces, standardize)
@@ -147,10 +163,11 @@ def load_expense_data():
         df = df.dropna(subset=['date', 'amount'])
 
         # Add derived columns
-        df['year'] = df['date'].dt.year
-        df['month'] = df['date'].dt.month
-        df['day_of_week'] = df['date'].dt.day_name()
-        df['month_year'] = df['date'].dt.to_period('M').astype(str)
+        if not df.empty:
+            df['year'] = df['date'].dt.year
+            df['month'] = df['date'].dt.month
+            df['day_of_week'] = df['date'].dt.day_name()
+            df['month_year'] = df['date'].dt.to_period('M').astype(str)
 
         return df
 
@@ -173,9 +190,55 @@ def main():
     with st.spinner("Loading expense data..."):
         df = load_expense_data()
 
-    if df.empty:
-        st.error("No data available. Please check the Google Sheets connection.")
-        return
+    # Show API status
+    api_status = st.session_state.get('api_available', False)
+    if api_status:
+        st.success("🔗 Google Sheets API 已連接 - 可新增/編輯記錄")
+    else:
+        st.warning("📖 僅讀取模式 - 查看 GOOGLE_API_SETUP.md 啟用完整功能")
+
+    # Navigation tabs
+    tab1, tab2, tab3 = st.tabs(["📊 報表分析", "➕ 新增支出", "✏️ 編輯支出"])
+
+    with tab1:
+        # Original dashboard functionality
+        if df.empty:
+            st.error("No data available. Please check the Google Sheets connection.")
+            return
+        show_dashboard(df)
+
+    with tab2:
+        # Quick entry section
+        if api_status:
+            if quick_entry_section():
+                st.rerun()  # Refresh to show updated quick entry form
+
+            st.divider()
+
+            # Full expense form
+            if expense_input_form():
+                st.rerun()  # Refresh to show new data
+        else:
+            st.info("🔑 請先設定 Google Sheets API 以啟用記錄功能")
+            st.markdown("""
+            **設定步驟:**
+            1. 查看 `GOOGLE_API_SETUP.md` 詳細說明
+            2. 設定 Google Service Account
+            3. 重新部署應用程式
+            """)
+
+    with tab3:
+        # Edit expenses
+        if api_status:
+            if not df.empty:
+                edit_expense_form(df)
+            else:
+                st.info("沒有資料可編輯")
+        else:
+            st.info("🔑 請先設定 Google Sheets API 以啟用編輯功能")
+
+def show_dashboard(df):
+    """Show the dashboard analytics (original functionality)"""
 
     # Sidebar filters
     st.sidebar.header("📋 Filters")

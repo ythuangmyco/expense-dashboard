@@ -1,0 +1,199 @@
+"""
+Google Sheets API Integration
+Handles read/write operations for expense data
+"""
+
+import streamlit as st
+import gspread
+from google.oauth2.service_account import Credentials
+import pandas as pd
+import json
+from datetime import datetime
+import time
+
+# Define the scope
+SCOPES = [
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/drive'
+]
+
+# Your Google Sheet details
+SHEET_ID = "16JzKmS8Jq9H6NmjrpKkqBqNfnXkC_gfPiMV6Y6qP_kQ"
+WORKSHEET_GID = 720407773  # The gid from your URL
+
+class SheetsAPI:
+    def __init__(self):
+        self.gc = None
+        self.sheet = None
+        self.worksheet = None
+
+    def authenticate(self):
+        """Authenticate with Google Sheets API"""
+        try:
+            # Try to get credentials from Streamlit secrets
+            if "google_sheets" in st.secrets:
+                # For deployment - credentials in secrets
+                credentials_dict = dict(st.secrets["google_sheets"])
+                credentials = Credentials.from_service_account_info(
+                    credentials_dict, scopes=SCOPES
+                )
+            else:
+                # For local development - look for service account file
+                credentials = Credentials.from_service_account_file(
+                    'service-account-key.json', scopes=SCOPES
+                )
+
+            self.gc = gspread.authorize(credentials)
+            self.sheet = self.gc.open_by_key(SHEET_ID)
+            self.worksheet = self.sheet.get_worksheet(0)  # First worksheet
+
+            return True
+
+        except Exception as e:
+            st.error(f"Authentication failed: {str(e)}")
+            return False
+
+    def read_data(self):
+        """Read all expense data from the sheet"""
+        try:
+            if not self.worksheet:
+                if not self.authenticate():
+                    return pd.DataFrame()
+
+            # Get all values
+            records = self.worksheet.get_all_records()
+            df = pd.DataFrame(records)
+
+            if df.empty:
+                return df
+
+            # Clean and process data (same as before)
+            column_mapping = {
+                '日期': 'date',
+                '類型_1': 'category_emoji',
+                '類型_2': 'category_type',
+                '金額': 'amount',
+                '帳戶': 'account',
+                '名稱': 'description',
+                '國家': 'country',
+                '地點': 'location',
+                '備註': 'notes'
+            }
+
+            # Rename columns if they exist
+            df = df.rename(columns=column_mapping)
+
+            # Convert date column
+            if 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date'], errors='coerce')
+
+            # Convert amount to numeric
+            if 'amount' in df.columns:
+                df['amount'] = pd.to_numeric(df['amount'], errors='coerce')
+
+            # Remove rows with invalid dates or amounts
+            df = df.dropna(subset=['date', 'amount'])
+
+            # Add derived columns
+            if not df.empty:
+                df['year'] = df['date'].dt.year
+                df['month'] = df['date'].dt.month
+                df['day_of_week'] = df['date'].dt.day_name()
+                df['month_year'] = df['date'].dt.to_period('M').astype(str)
+
+            return df
+
+        except Exception as e:
+            st.error(f"Error reading data: {str(e)}")
+            return pd.DataFrame()
+
+    def add_expense(self, expense_data):
+        """Add a new expense record"""
+        try:
+            if not self.worksheet:
+                if not self.authenticate():
+                    return False
+
+            # Convert expense_data to the format expected by the sheet
+            row_data = [
+                expense_data.get('date', ''),
+                expense_data.get('category_emoji', ''),
+                expense_data.get('category_type', ''),
+                expense_data.get('amount', ''),
+                expense_data.get('account', ''),
+                expense_data.get('description', ''),
+                expense_data.get('country', ''),
+                expense_data.get('location', ''),
+                expense_data.get('notes', '')
+            ]
+
+            # Append to the sheet
+            self.worksheet.append_row(row_data)
+
+            # Clear cache to refresh data
+            st.cache_data.clear()
+
+            return True
+
+        except Exception as e:
+            st.error(f"Error adding expense: {str(e)}")
+            return False
+
+    def update_expense(self, row_index, expense_data):
+        """Update an existing expense record"""
+        try:
+            if not self.worksheet:
+                if not self.authenticate():
+                    return False
+
+            # Convert expense_data to row format
+            row_data = [
+                expense_data.get('date', ''),
+                expense_data.get('category_emoji', ''),
+                expense_data.get('category_type', ''),
+                expense_data.get('amount', ''),
+                expense_data.get('account', ''),
+                expense_data.get('description', ''),
+                expense_data.get('country', ''),
+                expense_data.get('location', ''),
+                expense_data.get('notes', '')
+            ]
+
+            # Update the specific row (row_index + 2 because of header and 0-indexing)
+            row_number = row_index + 2
+            self.worksheet.update(f'A{row_number}:I{row_number}', [row_data])
+
+            # Clear cache to refresh data
+            st.cache_data.clear()
+
+            return True
+
+        except Exception as e:
+            st.error(f"Error updating expense: {str(e)}")
+            return False
+
+    def delete_expense(self, row_index):
+        """Delete an expense record"""
+        try:
+            if not self.worksheet:
+                if not self.authenticate():
+                    return False
+
+            # Delete the specific row (row_index + 2 because of header and 0-indexing)
+            row_number = row_index + 2
+            self.worksheet.delete_rows(row_number)
+
+            # Clear cache to refresh data
+            st.cache_data.clear()
+
+            return True
+
+        except Exception as e:
+            st.error(f"Error deleting expense: {str(e)}")
+            return False
+
+# Create a cached instance
+@st.cache_resource
+def get_sheets_api():
+    """Get a cached instance of SheetsAPI"""
+    return SheetsAPI()
