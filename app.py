@@ -20,6 +20,55 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Authentication
+def check_password():
+    """Returns True if the user had the correct password."""
+
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        if st.session_state["password"] == "0727":
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Don't store password
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        # First run, show input for password.
+        st.markdown("""
+        <div style="display: flex; justify-content: center; align-items: center; height: 50vh;">
+            <div style="text-align: center; padding: 2rem; background: white; border-radius: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
+                <h1 style="color: #667eea; margin-bottom: 1rem;">🔒 Family Expense Dashboard</h1>
+                <p style="color: #666; margin-bottom: 1.5rem;">Enter password to access your expense data</p>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col2:
+            st.text_input("Password", type="password", on_change=password_entered, key="password",
+                         placeholder="Enter your 4-digit code")
+        return False
+    elif not st.session_state["password_correct"]:
+        # Password not correct, show input + error.
+        st.markdown("""
+        <div style="display: flex; justify-content: center; align-items: center; height: 50vh;">
+            <div style="text-align: center; padding: 2rem; background: white; border-radius: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
+                <h1 style="color: #667eea; margin-bottom: 1rem;">🔒 Family Expense Dashboard</h1>
+                <p style="color: #666; margin-bottom: 1.5rem;">Enter password to access your expense data</p>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col2:
+            st.text_input("Password", type="password", on_change=password_entered, key="password",
+                         placeholder="Enter your 4-digit code")
+            st.error("❌ Incorrect password. Please try again.")
+        return False
+    else:
+        # Password correct.
+        return True
+
 # Custom CSS for mobile-friendly design
 st.markdown("""
 <style>
@@ -288,4 +337,5 @@ def show_visualizations(df):
     )
 
 if __name__ == "__main__":
-    main()
+    if check_password():
+        main()
