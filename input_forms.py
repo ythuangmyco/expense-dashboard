@@ -263,9 +263,9 @@ def expense_input_form(df=None):
 
             amount = st.number_input(
                 "金額 (NT$)",
-                min_value=0,
-                value=default_amount,
-                step=1,
+                min_value=0.0,
+                value=float(default_amount) if default_amount else 0.0,
+                step=1.0,
                 key="form_amount"
             )
 
@@ -442,8 +442,8 @@ def edit_expense_form(df):
                 new_amount = st.number_input(
                     "金額",
                     value=float(expense['amount']),
-                    min_value=0,
-                    step=1
+                    min_value=0.0,
+                    step=1.0
                 )
 
             with col2:
