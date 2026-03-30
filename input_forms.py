@@ -208,7 +208,37 @@ def expense_input_form(df=None):
         preview_category = st.session_state.get('form_category_detail', '🍽️ 飲食')
         show_smart_suggestions(df, preview_category)
 
-        st.divider()
+    st.divider()
+
+    # Country/Location selection OUTSIDE form (so it can refresh properly)
+    st.subheader("🌍 地點選擇")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        selected_country = st.selectbox(
+            "國家",
+            list(COUNTRIES.keys()),
+            index=0,
+            key="expense_country"
+        )
+
+    with col2:
+        locations = get_locations_for_country(selected_country)
+        if locations:
+            selected_location = st.selectbox(
+                "地點",
+                locations,
+                index=0,
+                key="expense_location"
+            )
+        else:
+            selected_location = st.text_input(
+                "地點",
+                placeholder=f"請輸入{selected_country}的地點",
+                key="expense_location_text"
+            )
+
+    st.divider()
 
     with st.form("expense_form", clear_on_submit=True):
         # Date input
@@ -294,32 +324,12 @@ def expense_input_form(df=None):
             key="form_description"
         )
 
-        # Location
-        col1, col2 = st.columns(2)
+        # Location values are taken from outside the form
+        country = selected_country  # Use the country selected outside form
+        location = selected_location  # Use the location selected outside form
 
-        with col1:
-            country = st.selectbox(
-                "國家",
-                list(COUNTRIES.keys()),
-                index=0,
-                key="form_country"
-            )
-
-        with col2:
-            locations = get_locations_for_country(country)
-            if locations:
-                location = st.selectbox(
-                    "地點",
-                    locations,
-                    index=0,
-                    key=f"form_location_{country}"  # Dynamic key based on country
-                )
-            else:
-                location = st.text_input(
-                    "地點",
-                    placeholder="請輸入地點",
-                    key=f"form_location_text_{country}"  # Dynamic key based on country
-                )
+        # Show selected location in form for reference
+        st.info(f"📍 將記錄到: {country} - {location}")
 
         # Notes
         notes = st.text_area(
