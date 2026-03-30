@@ -108,22 +108,26 @@ def show_smart_suggestions(df, category_type):
     suggestions = get_smart_suggestions(df, category_type)
 
     if suggestions:
-        with st.expander("💡 智慧建議 (基於您的記錄)"):
+        with st.expander("💡 智慧建議 (基於您的記錄)", expanded=True):
             col1, col2 = st.columns(2)
 
             with col1:
                 if suggestions.get('descriptions'):
                     st.write("**常見項目:**")
-                    for desc in suggestions['descriptions'][:3]:
-                        if st.button(f"📝 {desc}", key=f"suggest_desc_{desc}"):
+                    for i, desc in enumerate(suggestions['descriptions'][:3]):
+                        if st.button(f"📝 {desc}", key=f"suggest_desc_{desc}_{category_type}_{i}"):
                             st.session_state['suggested_description'] = desc
+                            st.session_state['form_description'] = desc
+                            st.rerun()
 
             with col2:
                 if suggestions.get('amounts'):
                     st.write("**常見金額:**")
-                    for amount in suggestions['amounts'][:3]:
-                        if st.button(f"💰 NT${int(amount)}", key=f"suggest_amt_{amount}"):
+                    for i, amount in enumerate(suggestions['amounts'][:3]):
+                        if st.button(f"💰 NT${int(amount)}", key=f"suggest_amt_{amount}_{category_type}_{i}"):
                             st.session_state['suggested_amount'] = int(amount)
+                            st.session_state['form_amount'] = int(amount)
+                            st.rerun()
 
             # Show average
             if suggestions.get('avg_amount'):
@@ -198,6 +202,14 @@ def expense_input_form(df=None):
     # Check if this is a quick entry
     quick_entry = st.session_state.get('quick_entry_active', False)
 
+    # Show smart suggestions OUTSIDE the form (so buttons work)
+    if df is not None and not df.empty:
+        # Get category for suggestions
+        preview_category = st.session_state.get('form_category_detail', '🍽️ 飲食')
+        show_smart_suggestions(df, preview_category)
+
+        st.divider()
+
     with st.form("expense_form", clear_on_submit=True):
         # Date input
         expense_date = st.date_input(
@@ -233,9 +245,7 @@ def expense_input_form(df=None):
                 key="form_category_detail"
             )
 
-        # Show smart suggestions if historical data is available
-        if df is not None and not df.empty:
-            show_smart_suggestions(df, category_detail)
+        # Smart suggestions are now shown above the form
 
         # Amount and account
         col1, col2 = st.columns(2)
