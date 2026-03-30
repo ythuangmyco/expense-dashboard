@@ -332,6 +332,30 @@ def show_dashboard(df):
                 value=f"NT$ {daily_avg:,.0f}"
             )
 
+    # Recent transactions (moved to follow Summary)
+    if len(filtered_df) > 0:
+        st.header("📝 Recent Transactions")
+
+        # Show last 20 transactions
+        recent_df = filtered_df.nlargest(20, 'date')[['date', 'category_emoji', 'category_type', 'amount', 'account', 'description', 'location']]
+        recent_df['date'] = recent_df['date'].dt.strftime('%Y-%m-%d')
+        recent_df['amount'] = recent_df['amount'].apply(lambda x: f"NT$ {x:,.0f}")
+
+        st.dataframe(
+            recent_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "date": "Date",
+                "category_emoji": "Category",
+                "category_type": "Type",
+                "amount": "Amount",
+                "account": "Account",
+                "description": "Description",
+                "location": "Location"
+            }
+        )
+
     # Main visualizations
     if len(filtered_df) > 0:
         show_visualizations(filtered_df)
@@ -392,28 +416,6 @@ def show_visualizations(df):
         )
         st.plotly_chart(fig_bar, use_container_width=True)
 
-    # Recent transactions
-    st.header("📝 Recent Transactions")
-
-    # Show last 20 transactions
-    recent_df = df.nlargest(20, 'date')[['date', 'category_emoji', 'category_type', 'amount', 'account', 'description', 'location']]
-    recent_df['date'] = recent_df['date'].dt.strftime('%Y-%m-%d')
-    recent_df['amount'] = recent_df['amount'].apply(lambda x: f"NT$ {x:,.0f}")
-
-    st.dataframe(
-        recent_df,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "date": "Date",
-            "category_emoji": "Category",
-            "category_type": "Type",
-            "amount": "Amount",
-            "account": "Account",
-            "description": "Description",
-            "location": "Location"
-        }
-    )
 
 if __name__ == "__main__":
     if check_password():

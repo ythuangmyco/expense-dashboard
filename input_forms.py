@@ -218,17 +218,22 @@ def expense_input_form(df=None):
         selected_country = st.selectbox(
             "國家",
             list(COUNTRIES.keys()),
-            index=0,
+            index=0,  # Taiwan is first, so index=0
             key="expense_country"
         )
 
     with col2:
         locations = get_locations_for_country(selected_country)
         if locations:
+            # Default to Tainan if Taiwan is selected
+            default_index = 0
+            if selected_country == "台灣" and "臺南" in locations:
+                default_index = locations.index("臺南")
+
             selected_location = st.selectbox(
                 "地點",
                 locations,
-                index=0,
+                index=default_index,
                 key="expense_location"
             )
         else:
