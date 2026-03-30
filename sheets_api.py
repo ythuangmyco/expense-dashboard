@@ -28,29 +28,61 @@ class SheetsAPI:
         self.worksheet = None
 
     def authenticate(self):
-        """Authenticate with Google Sheets API"""
+        """Authenticate with Google Sheets API with better error handling"""
         try:
-            # Try to get credentials from Streamlit secrets
-            if "google_sheets" in st.secrets:
-                # For deployment - credentials in secrets
-                credentials_dict = dict(st.secrets["google_sheets"])
-                credentials = Credentials.from_service_account_info(
-                    credentials_dict, scopes=SCOPES
-                )
-            else:
-                # For local development - look for service account file
-                credentials = Credentials.from_service_account_file(
-                    'service-account-key.json', scopes=SCOPES
-                )
+            credentials = None
 
+            # Try Streamlit secrets first (for deployment)
+            if "google_sheets" in st.secrets:
+                try:
+                    credentials_dict = dict(st.secrets["google_sheets"])
+
+                    # Validate required fields
+                    required_fields = ['type', 'project_id', 'private_key', 'client_email', 'token_uri']
+                    missing_fields = [field for field in required_fields if field not in credentials_dict]
+
+                    if missing_fields:
+                        st.error(f"Missing required fields in secrets: {missing_fields}")
+                        return False
+
+                    credentials = Credentials.from_service_account_info(
+                        credentials_dict, scopes=SCOPES
+                    )
+
+                except Exception as e:
+                    st.error(f"Secrets format error: {str(e)}")
+                    # Try local file as fallback
+
+            # Fallback to local file (for development or if secrets fail)
+            if credentials is None:
+                try:
+                    import os
+                    if os.path.exists('service-account-key.json'):
+                        credentials = Credentials.from_service_account_file(
+                            'service-account-key.json', scopes=SCOPES
+                        )
+                    else:
+                        st.error("No authentication method available. Please check secrets or service account file.")
+                        return False
+                except Exception as e:
+                    st.error(f"Local file authentication failed: {str(e)}")
+                    return False
+
+            # Try to authenticate with Google
             self.gc = gspread.authorize(credentials)
             self.sheet = self.gc.open_by_key(SHEET_ID)
             self.worksheet = self.sheet.get_worksheet(0)  # First worksheet
 
-            return True
+            # Test the connection with a simple call
+            try:
+                self.worksheet.get_all_records(head=1)  # Just get headers to test
+                return True
+            except Exception as e:
+                st.error(f"Sheet access failed. Check sharing permissions: {str(e)}")
+                return False
 
         except Exception as e:
-            st.error(f"Authentication failed: {str(e)}")
+            st.error(f"Authentication error: {str(e)}")
             return False
 
     def read_data(self):

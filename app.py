@@ -190,12 +190,28 @@ def main():
     with st.spinner("Loading expense data..."):
         df = load_expense_data()
 
-    # Show API status
+    # Show API status with more details
     api_status = st.session_state.get('api_available', False)
     if api_status:
         st.success("🔗 Google Sheets API 已連接 - 可新增/編輯記錄")
     else:
-        st.warning("📖 僅讀取模式 - 查看 GOOGLE_API_SETUP.md 啟用完整功能")
+        # More helpful error message
+        if "google_sheets" in st.secrets:
+            st.error("🔧 API 認證失敗 - 請檢查 Streamlit Cloud 的 Secrets 設定")
+            with st.expander("🛠️ 快速修復"):
+                st.markdown("""
+                **可能的問題：**
+                1. Secrets 格式錯誤
+                2. Service Account 權限不足
+                3. Google Sheet 未正確分享
+
+                **修復步驟：**
+                1. 檢查 Streamlit Cloud → Settings → Secrets
+                2. 確認所有必要欄位都存在
+                3. 檢查 Google Sheet 是否分享給 service account
+                """)
+        else:
+            st.warning("📖 僅讀取模式 - 查看 GOOGLE_API_SETUP.md 啟用完整功能")
 
     # Navigation tabs
     tab1, tab2, tab3 = st.tabs(["📊 報表分析", "➕ 新增支出", "✏️ 編輯支出"])
