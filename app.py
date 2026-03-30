@@ -16,7 +16,7 @@ from input_forms import quick_entry_section, expense_input_form, edit_expense_fo
 
 # Page configuration
 st.set_page_config(
-    page_title="💰 Expense Dashboard",
+    page_title="💰 HuangLiuHome Expense",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -39,7 +39,7 @@ def check_password():
         st.markdown("""
         <div style="display: flex; justify-content: center; align-items: center; height: 50vh;">
             <div style="text-align: center; padding: 2rem; background: white; border-radius: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
-                <h1 style="color: #667eea; margin-bottom: 1rem;">🔒 Family Expense Dashboard</h1>
+                <h1 style="color: #667eea; margin-bottom: 1rem;">🔒 HuangLiuHome Expense</h1>
                 <p style="color: #666; margin-bottom: 1.5rem;">Enter password to access your expense data</p>
             </div>
         </div>
@@ -55,7 +55,7 @@ def check_password():
         st.markdown("""
         <div style="display: flex; justify-content: center; align-items: center; height: 50vh;">
             <div style="text-align: center; padding: 2rem; background: white; border-radius: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
-                <h1 style="color: #667eea; margin-bottom: 1rem;">🔒 Family Expense Dashboard</h1>
+                <h1 style="color: #667eea; margin-bottom: 1rem;">🔒 HuangLiuHome Expense</h1>
                 <p style="color: #666; margin-bottom: 1.5rem;">Enter password to access your expense data</p>
             </div>
         </div>
@@ -181,7 +181,7 @@ def main():
     # Header
     st.markdown("""
     <div class="main-header">
-        <h1>📊 Family Expense Dashboard</h1>
+        <h1>📊 HuangLiuHome Expense</h1>
         <p>Real-time expense tracking and insights</p>
     </div>
     """, unsafe_allow_html=True)
@@ -213,18 +213,11 @@ def main():
         else:
             st.warning("📖 僅讀取模式 - 查看 GOOGLE_API_SETUP.md 啟用完整功能")
 
-    # Navigation tabs
-    tab1, tab2, tab3 = st.tabs(["📊 報表分析", "➕ 新增支出", "✏️ 編輯支出"])
+    # Navigation tabs - Reordered: 新增支出, 編輯支出, 報表分析
+    tab1, tab2, tab3 = st.tabs(["➕ 新增支出", "✏️ 編輯支出", "📊 報表分析"])
 
     with tab1:
-        # Original dashboard functionality
-        if df.empty:
-            st.error("No data available. Please check the Google Sheets connection.")
-            return
-        show_dashboard(df)
-
-    with tab2:
-        # Quick entry section
+        # Quick entry section and expense form
         if api_status:
             if quick_entry_section():
                 st.rerun()  # Refresh to show updated quick entry form
@@ -243,7 +236,7 @@ def main():
             3. 重新部署應用程式
             """)
 
-    with tab3:
+    with tab2:
         # Edit expenses
         if api_status:
             if not df.empty:
@@ -252,6 +245,13 @@ def main():
                 st.info("沒有資料可編輯")
         else:
             st.info("🔑 請先設定 Google Sheets API 以啟用編輯功能")
+
+    with tab3:
+        # Dashboard analytics
+        if df.empty:
+            st.error("No data available. Please check the Google Sheets connection.")
+            return
+        show_dashboard(df)
 
 def show_dashboard(df):
     """Show the dashboard analytics (original functionality)"""
