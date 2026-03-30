@@ -143,24 +143,17 @@ class SheetsAPI:
                 '帳戶': 'account',
                 '名稱': 'description',
                 '國家': 'country',
-                '地點': 'location'
-                # Note: No '備註' column in this sheet
+                '合併地點': 'location',  # Use your combined location column!
+                '備註': 'notes'
             }
 
             # Rename columns if they exist
             df = df.rename(columns=column_mapping)
 
-            # Combine location columns (similar to your INDEX/FILTER formula)
-            if any(col in df.columns for col in ['地點', '地點.1', '地點.2']):
-                location_cols = [col for col in df.columns if col.startswith('地點')]
-                if len(location_cols) > 1:
-                    # Combine multiple location columns, taking first non-empty value
-                    df['location'] = df[location_cols].apply(
-                        lambda row: next((str(val).strip() for val in row if pd.notna(val) and str(val).strip()), ''),
-                        axis=1
-                    )
-                    # Drop the duplicate location columns
-                    df = df.drop(columns=location_cols[1:])  # Keep first, drop duplicates
+            # Drop duplicate location columns (keep only the mapped '合併地點' -> 'location')
+            duplicate_location_cols = [col for col in df.columns if col.startswith('地點') and col != 'location']
+            if duplicate_location_cols:
+                df = df.drop(columns=duplicate_location_cols)
 
             # Convert date column
             if 'date' in df.columns:

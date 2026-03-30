@@ -148,8 +148,8 @@ def load_expense_data():
             '帳戶': 'account',
             '名稱': 'description',
             '國家': 'country',
-            '地點': 'location'
-            # Note: No '備註' column in this sheet
+            '合併地點': 'location',  # Use your combined location column!
+            '備註': 'notes'
         }
 
         df = df.rename(columns=column_mapping)
