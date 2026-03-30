@@ -19,7 +19,7 @@ SCOPES = [
 
 # Your Google Sheet details
 SHEET_ID = "16JzKmS8Jq9H6NmjrpKkqBqNfnXkC_gfPiMV6Y6qP_kQ"
-WORKSHEET_GID = 720407773  # The gid from your URL
+WORKSHEET_GID = 811746503  # Updated to correct tab gid
 
 class SheetsAPI:
     def __init__(self):
@@ -71,7 +71,13 @@ class SheetsAPI:
             # Try to authenticate with Google
             self.gc = gspread.authorize(credentials)
             self.sheet = self.gc.open_by_key(SHEET_ID)
-            self.worksheet = self.sheet.get_worksheet(0)  # First worksheet
+            # Get the specific worksheet by GID
+            try:
+                self.worksheet = self.sheet.get_worksheet_by_id(WORKSHEET_GID)
+            except Exception:
+                # Fallback to first worksheet if GID fails
+                st.warning(f"Could not find worksheet with GID {WORKSHEET_GID}, using first worksheet")
+                self.worksheet = self.sheet.get_worksheet(0)
 
             # Test the connection with a simple call
             try:
@@ -120,11 +126,16 @@ class SheetsAPI:
             # Remove empty columns
             df = df.loc[:, (df != '').any(axis=0)]
 
+            # Handle duplicate column names (like duplicate '地點')
+            # If there are duplicates, pandas will name them: '地點', '地點.1', etc.
+            df.columns = df.columns.astype(str)  # Ensure string columns
+
             if df.empty:
                 return df
 
-            # Clean and process data (same as before)
+            # Clean and process data - updated for actual sheet structure
             column_mapping = {
+                'Timestamp': 'timestamp',
                 '日期': 'date',
                 '類型_1': 'category_emoji',
                 '類型_2': 'category_type',
@@ -132,12 +143,24 @@ class SheetsAPI:
                 '帳戶': 'account',
                 '名稱': 'description',
                 '國家': 'country',
-                '地點': 'location',
-                '備註': 'notes'
+                '地點': 'location'
+                # Note: No '備註' column in this sheet
             }
 
             # Rename columns if they exist
             df = df.rename(columns=column_mapping)
+
+            # Combine location columns (similar to your INDEX/FILTER formula)
+            if any(col in df.columns for col in ['地點', '地點.1', '地點.2']):
+                location_cols = [col for col in df.columns if col.startswith('地點')]
+                if len(location_cols) > 1:
+                    # Combine multiple location columns, taking first non-empty value
+                    df['location'] = df[location_cols].apply(
+                        lambda row: next((str(val).strip() for val in row if pd.notna(val) and str(val).strip()), ''),
+                        axis=1
+                    )
+                    # Drop the duplicate location columns
+                    df = df.drop(columns=location_cols[1:])  # Keep first, drop duplicates
 
             # Convert date column
             if 'date' in df.columns:

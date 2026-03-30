@@ -111,7 +111,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Constants
-SHEET_URL = "https://docs.google.com/spreadsheets/d/16JzKmS8Jq9H6NmjrpKkqBqNfnXkC_gfPiMV6Y6qP_kQ/export?format=csv&gid=720407773"
+SHEET_URL = "https://docs.google.com/spreadsheets/d/16JzKmS8Jq9H6NmjrpKkqBqNfnXkC_gfPiMV6Y6qP_kQ/export?format=csv&gid=811746503"
 
 # Cache data loading function
 @st.cache_data(ttl=60)  # Cache for 1 minute (shorter for real-time updates)
@@ -138,8 +138,9 @@ def load_expense_data():
         # Clean column names (remove extra spaces, standardize)
         df.columns = df.columns.str.strip()
 
-        # Rename columns for easier handling
+        # Rename columns for easier handling - updated for actual sheet structure
         column_mapping = {
+            'Timestamp': 'timestamp',
             '日期': 'date',
             '類型_1': 'category_emoji',
             '類型_2': 'category_type',
@@ -147,8 +148,8 @@ def load_expense_data():
             '帳戶': 'account',
             '名稱': 'description',
             '國家': 'country',
-            '地點': 'location',
-            '備註': 'notes'
+            '地點': 'location'
+            # Note: No '備註' column in this sheet
         }
 
         df = df.rename(columns=column_mapping)
