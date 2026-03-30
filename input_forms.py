@@ -55,9 +55,9 @@ TAIWAN_LOCATIONS = [
 ]
 
 JAPAN_LOCATIONS = ["九州", "沖繩"]
-AUSTRALIA_LOCATIONS = ["雪梨", "墨爾本"]
-CANADA_LOCATIONS = ["溫哥華"]
-KOREA_LOCATIONS = ["首爾"]
+AUSTRALIA_LOCATIONS = ["墨爾本", "雪梨"]
+CANADA_LOCATIONS = ["溫哥華", "卡加利", "愛德蒙頓"]
+KOREA_LOCATIONS = ["釜山"]
 
 ACCOUNTS = ["菇菇", "過兒"]
 
@@ -312,13 +312,13 @@ def expense_input_form(df=None):
                     "地點",
                     locations,
                     index=0,
-                    key="form_location"
+                    key=f"form_location_{country}"  # Dynamic key based on country
                 )
             else:
                 location = st.text_input(
                     "地點",
                     placeholder="請輸入地點",
-                    key="form_location_text"
+                    key=f"form_location_text_{country}"  # Dynamic key based on country
                 )
 
         # Notes
