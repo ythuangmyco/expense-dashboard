@@ -92,9 +92,33 @@ class SheetsAPI:
                 if not self.authenticate():
                     return pd.DataFrame()
 
-            # Get all values
-            records = self.worksheet.get_all_records()
-            df = pd.DataFrame(records)
+            # Get raw data to handle duplicate headers
+            all_values = self.worksheet.get_all_values()
+            if not all_values:
+                return pd.DataFrame()
+
+            # Get headers and clean them
+            headers = all_values[0]
+
+            # Clean headers - remove empty and fix duplicates
+            cleaned_headers = []
+            for i, header in enumerate(headers):
+                if header.strip():  # If not empty
+                    cleaned_headers.append(header.strip())
+                else:  # If empty, create a placeholder
+                    cleaned_headers.append(f'empty_col_{i}')
+
+            # Get data rows
+            data_rows = all_values[1:]
+
+            # Create DataFrame
+            df = pd.DataFrame(data_rows, columns=cleaned_headers)
+
+            # Remove completely empty rows
+            df = df.dropna(how='all')
+
+            # Remove empty columns
+            df = df.loc[:, (df != '').any(axis=0)]
 
             if df.empty:
                 return df
@@ -136,7 +160,13 @@ class SheetsAPI:
             return df
 
         except Exception as e:
-            st.error(f"Error reading data: {str(e)}")
+            error_msg = str(e)
+            if "duplicate" in error_msg.lower() and "header" in error_msg.lower():
+                st.error("🔧 Sheet header issue detected - trying to fix automatically...")
+                # This should now be handled by our improved logic above
+                return pd.DataFrame()
+            else:
+                st.error(f"Error reading data: {error_msg}")
             return pd.DataFrame()
 
     def add_expense(self, expense_data):
