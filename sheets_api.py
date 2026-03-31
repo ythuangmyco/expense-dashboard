@@ -19,7 +19,7 @@ SCOPES = [
 
 # Your Google Sheet details
 SHEET_ID = "16JzKmS8Jq9H6NmjrpKkqBqNfnXkC_gfPiMV6Y6qP_kQ"
-WORKSHEET_GID = 811746503  # Updated to correct tab gid
+WORKSHEET_GID = 453361449  # Fresh plain text sheet
 
 class SheetsAPI:
     def __init__(self):
@@ -133,9 +133,8 @@ class SheetsAPI:
             if df.empty:
                 return df
 
-            # Clean and process data - updated for actual sheet structure
+            # Clean and process data - NEW plain text sheet structure
             column_mapping = {
-                'Timestamp': 'timestamp',
                 '日期': 'date',
                 '類型_1': 'category_emoji',
                 '類型_2': 'category_type',
@@ -143,17 +142,12 @@ class SheetsAPI:
                 '帳戶': 'account',
                 '名稱': 'description',
                 '國家': 'country',
-                '合併地點': 'location',  # Use your combined location column!
+                '地點': 'location',
                 '備註': 'notes'
             }
 
             # Rename columns if they exist
             df = df.rename(columns=column_mapping)
-
-            # Drop duplicate location columns (keep only the mapped '合併地點' -> 'location')
-            duplicate_location_cols = [col for col in df.columns if col.startswith('地點') and col != 'location']
-            if duplicate_location_cols:
-                df = df.drop(columns=duplicate_location_cols)
 
             # Convert date column
             if 'date' in df.columns:
