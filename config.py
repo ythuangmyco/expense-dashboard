@@ -38,62 +38,31 @@ COLUMN_MAPPING = {
     'å\x82\x99è¨»': 'notes'
 }
 
-# Type_1 Options (Daily vs Travel)
-TYPE_1_OPTIONS = ["📅 日常", "✈️ 旅遊"]
+# Type_1 Options (Daily vs Travel) - EXACT match to Google Form
+TYPE_1_OPTIONS = ["📅 日常", "✈️ 旅行"]
 
-# Quick Favorites for mobile-first entry (matching your form categories)
-QUICK_FAVORITES = {
-    "☕ 咖啡": {"type_1": "📅 日常", "category_type": "dining", "amount": 150},
-    "🚗 停車": {"type_1": "📅 日常", "category_type": "transportation", "amount": 100},
-    "⛽ 加油": {"type_1": "📅 日常", "category_type": "transportation", "amount": 1200},
-    "🍜 午餐": {"type_1": "📅 日常", "category_type": "dining", "amount": 200},
-    "🛒 生活用品": {"type_1": "📅 日常", "category_type": "household", "amount": 300},
-    "🚌 公車": {"type_1": "📅 日常", "category_type": "transportation", "amount": 30},
-    "🥤 飲料": {"type_1": "📅 日常", "category_type": "dining", "amount": 80},
-    "🎬 娛樂": {"type_1": "📅 日常", "category_type": "entertainment", "amount": 500}
-}
+# Quick favorites removed as requested
 
-# Category Options (Type_2 from your Google Form - 17 categories)
+# Category Options (Type_2) - EXACT match to Google Form
 CATEGORIES = [
-    "dining",          # 飲食
-    "transportation",  # 交通
-    "baby",           # 嬰兒用品
-    "household",      # 家用品
-    "insurance",      # 保險
-    "medical",        # 醫療
-    "education",      # 教育
-    "accommodation",  # 住宿
-    "tickets",        # 票券
-    "clothing",       # 衣飾
-    "entertainment",  # 娛樂
-    "beauty",         # 美容
-    "taxes",          # 稅務
-    "communication",  # 通訊
-    "housing",        # 房屋
-    "gifts",          # 禮品
-    "pets"            # 寵物
+    "🍽️ 飲食",
+    "🚗 交通",
+    "👶 寶寶",
+    "🧴 日用",
+    "🛡️ 保險",
+    "🏥 醫療",
+    "📚 教育",
+    "🏨 住宿",
+    "🎫 門票雜支",
+    "👗 服飾",
+    "🎮 娛樂",
+    "💄 美容",
+    "📄 稅金",
+    "📱 通信",
+    "🏠 住房物業",
+    "🎁 禮物",
+    "🐾 寵物"
 ]
-
-# Category Display Names (for UI)
-CATEGORY_DISPLAY = {
-    "dining": "🍽️ 飲食",
-    "transportation": "🚗 交通",
-    "baby": "👶 嬰兒用品",
-    "household": "🏠 家用品",
-    "insurance": "🛡️ 保險",
-    "medical": "💊 醫療",
-    "education": "📚 教育",
-    "accommodation": "🏨 住宿",
-    "tickets": "🎫 票券",
-    "clothing": "👕 衣飾",
-    "entertainment": "🎯 娛樂",
-    "beauty": "💄 美容",
-    "taxes": "💰 稅務",
-    "communication": "📱 通訊",
-    "housing": "🏘️ 房屋",
-    "gifts": "🎁 禮品",
-    "pets": "🐕 寵物"
-}
 
 # Account Options (Family Members - matching your Google Form)
 ACCOUNTS = ["菇菇", "過兒"]

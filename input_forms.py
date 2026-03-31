@@ -8,45 +8,13 @@ import pandas as pd
 from datetime import datetime, date
 from typing import Dict, List, Optional
 from config import (
-    QUICK_FAVORITES, TYPE_1_OPTIONS, CATEGORIES, CATEGORY_DISPLAY, ACCOUNTS, LOCATIONS_MAP,
+    TYPE_1_OPTIONS, CATEGORIES, ACCOUNTS, LOCATIONS_MAP,
     DEFAULT_TYPE_1, DEFAULT_COUNTRY, DEFAULT_LOCATION, DEFAULT_ACCOUNT
 )
 from sheets_api import get_sheets_api
 
 
-def quick_entry_section(df: pd.DataFrame) -> Optional[Dict]:
-    """
-    Quick entry buttons for common expenses (mobile-first approach)
-    Returns expense data if a quick entry is selected
-    """
-    st.subheader("⚡ 快速記帳")
-    st.caption("一鍵新增常用支出")
-
-    # Display quick favorites in a grid
-    cols = st.columns(4)  # 4 columns for mobile-friendly grid
-
-    for i, (name, data) in enumerate(QUICK_FAVORITES.items()):
-        with cols[i % 4]:
-            if st.button(
-                name,
-                key=f"quick_{i}",
-                help=f"類別: {CATEGORY_DISPLAY.get(data['category_type'], data['category_type'])} | 預設金額: NT${data['amount']}",
-                use_container_width=True
-            ):
-                # Return quick entry data
-                return {
-                    "date": datetime.now().strftime("%Y-%m-%d"),
-                    "type_1": data["type_1"],
-                    "category_type": data["category_type"],
-                    "amount": data["amount"],
-                    "account": DEFAULT_ACCOUNT,
-                    "description": name.split(" ", 1)[1] if " " in name else name,
-                    "country": DEFAULT_COUNTRY,
-                    "location": DEFAULT_LOCATION,
-                    "notes": ""
-                }
-
-    return None
+# Quick entry section removed as requested
 
 
 def smart_suggestions(df: pd.DataFrame, category_type: str = None) -> Dict:
@@ -143,7 +111,6 @@ def expense_input_form(df: pd.DataFrame) -> bool:
         category_type = st.selectbox(
             "分類 🏷️",
             options=CATEGORIES,
-            format_func=lambda x: CATEGORY_DISPLAY.get(x, x),
             help="選擇具體的支出類型"
         )
 

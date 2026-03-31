@@ -265,11 +265,19 @@ class SheetsAPI:
             return False
 
         try:
-            # Prepare row data in correct column order (matching Google Form structure)
+            # Convert date to match existing format (MM/DD/YYYY)
+            try:
+                from datetime import datetime
+                date_obj = datetime.strptime(expense_data.get('date', ''), '%Y-%m-%d')
+                formatted_date = date_obj.strftime('%m/%d/%Y')
+            except:
+                formatted_date = expense_data.get('date', '')
+
+            # Prepare row data in EXACT Google Form format (matching existing data)
             row_data = [
-                expense_data.get('date', ''),
-                expense_data.get('type_1', ''),          # Daily vs Travel
-                expense_data.get('category_type', ''),   # Specific category
+                formatted_date,                          # MM/DD/YYYY format
+                expense_data.get('type_1', ''),          # 📅 日常 or ✈️ 旅行
+                expense_data.get('category_type', ''),   # 🍽️ 飲食, 👶 寶寶 etc. (exact form values)
                 expense_data.get('amount', ''),
                 expense_data.get('account', ''),
                 expense_data.get('description', ''),
@@ -395,7 +403,7 @@ def get_sheets_api() -> SheetsAPI:
     return _sheets_api
 
 
-@st.cache_data(ttl=300)  # Cache for 5 minutes
+@st.cache_data(ttl=60)  # Cache for 1 minute to see updates faster
 def load_expense_data() -> pd.DataFrame:
     """
     Cached function to load expense data

@@ -16,7 +16,7 @@ import numpy as np
 from config import PAGE_CONFIG, COLORS
 from auth import check_password, password_screen, auth_sidebar, init_session_state
 from sheets_api import load_expense_data, get_sheets_api, refresh_data
-from input_forms import quick_entry_section, expense_input_form, edit_expense_form
+from input_forms import expense_input_form, edit_expense_form
 
 # Page configuration
 st.set_page_config(**PAGE_CONFIG)
@@ -365,22 +365,7 @@ def add_expense_page():
     with st.spinner("📊 載入資料中..."):
         df = load_expense_data()
 
-    # Quick entry section
-    quick_expense = quick_entry_section(df)
-    if quick_expense:
-        # Quick entry was selected, add it
-        api = get_sheets_api()
-        success = api.add_expense(quick_expense)
-        if success:
-            st.success(f"✅ 快速新增: {quick_expense['description']} - NT${quick_expense['amount']:,.0f}")
-            # Refresh data
-            st.cache_data.clear()
-        else:
-            st.error("❌ 新增失敗")
-
-    st.divider()
-
-    # Detailed form
+    # Main expense input form
     expense_input_form(df)
 
 
