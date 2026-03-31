@@ -223,15 +223,28 @@ class SheetsAPI:
         logger.info(f"📊 Raw DataFrame shape: {df.shape}")
         if 'amount' in df.columns or '金額' in df.columns:
             amount_col = '金額' if '金額' in df.columns else 'amount'
+            # Show raw amount data first
+            sample_amounts = df[amount_col].dropna().head(5).tolist()
+            logger.info(f"💰 Raw amount samples: {sample_amounts}")
+
             # Convert to numeric for sum calculation - SAFE conversion
             try:
                 numeric_amounts = pd.to_numeric(df[amount_col], errors='coerce')
+                valid_amounts = numeric_amounts.notna().sum()
                 total = float(numeric_amounts.sum()) if numeric_amounts.notna().any() else 0.0
-                logger.info(f"💰 Total amount before processing: {total}")
-                st.info(f"📊 載入原始資料: {len(df)} 筆, 總額: NT${total:,.0f}")
+                logger.info(f"💰 Initial conversion: {valid_amounts} valid amounts, total: {total}")
+
+                if total > 0:
+                    st.info(f"📊 載入原始資料: {len(df)} 筆, 總額: NT${total:,.0f}")
+                else:
+                    st.warning(f"📊 載入原始資料: {len(df)} 筆, 總額: NT$0 (金額轉換失敗)")
+                    st.info(f"💡 原始金額樣本: {sample_amounts}")
+
             except Exception as e:
                 logger.error(f"❌ Error calculating initial total: {e}")
-                st.info(f"📊 載入原始資料: {len(df)} 筆")
+                st.warning(f"📊 載入原始資料: {len(df)} 筆 (金額計算錯誤)")
+        else:
+            st.warning(f"📊 載入原始資料: {len(df)} 筆 (找不到金額欄位)")
 
         # Clean and process the data
         return self._process_data(df, source="api")
@@ -343,20 +356,48 @@ class SheetsAPI:
             sample_values = df[col].dropna().head(10).tolist()
             logger.info(f"💰 Sample values from '{col}': {sample_values}")
 
+            # Show data types and unique values
+            col_dtypes = df[col].dtype
+            unique_values = df[col].nunique()
+            null_count = df[col].isnull().sum()
+            logger.info(f"💰 Column '{col}' info: dtype={col_dtypes}, unique={unique_values}, nulls={null_count}")
+
             # Try to sum this column to see totals
             try:
                 numeric_values = pd.to_numeric(df[col], errors='coerce')
-                col_total = numeric_values.sum()
+                col_total = float(numeric_values.sum()) if numeric_values.notna().any() else 0.0
                 valid_count = numeric_values.notna().sum()
-                logger.info(f"💰 Column '{col}' total: {col_total:,.0f} ({valid_count} valid values)")
+                logger.info(f"💰 Column '{col}' total: {col_total} ({valid_count} valid values)")
 
                 # If this column has the expected total (~2.5M), flag it
                 if col_total > 2000000:
-                    logger.info(f"🎯 FOUND LIKELY CORRECT AMOUNT COLUMN: '{col}' with total {col_total:,.0f}")
+                    logger.info(f"🎯 FOUND LIKELY CORRECT AMOUNT COLUMN: '{col}' with total {col_total}")
                     st.info(f"🎯 發現可能的正確金額欄位: '{col}' 總額: NT${col_total:,.0f}")
+                elif col_total > 100000:
+                    logger.info(f"💰 Column '{col}' has reasonable total: {col_total}")
+                    st.info(f"💡 欄位 '{col}' 總額: NT${col_total:,.0f}")
 
             except Exception as e:
                 logger.info(f"💰 Could not calculate total for '{col}': {e}")
+
+        # If no amount-related columns found, show ALL columns
+        if not amount_related_cols:
+            logger.warning("💰 No amount-related columns found! Checking ALL columns...")
+            st.warning("⚠️ 找不到金額相關欄位！檢查所有欄位...")
+
+            for col in df.columns:
+                try:
+                    numeric_test = pd.to_numeric(df[col], errors='coerce')
+                    col_total = float(numeric_test.sum()) if numeric_test.notna().any() else 0.0
+                    valid_count = numeric_test.notna().sum()
+
+                    if valid_count > 10 and col_total > 1000:  # If column has numeric data
+                        logger.info(f"💰 Numeric column '{col}': total={col_total}, valid={valid_count}")
+                        if col_total > 100000:
+                            st.info(f"💡 可能的金額欄位: '{col}' 總額: NT${col_total:,.0f}")
+
+                except:
+                    pass
 
         # Apply column mapping (Chinese to English) - only for columns that exist
         existing_mapping = {k: v for k, v in COLUMN_MAPPING.items() if k in df.columns}
@@ -570,10 +611,42 @@ class SheetsAPI:
                 logger.info(f"💰 Applying cleaning function to {amount_col}")
                 df['amount'] = df[amount_col].apply(clean_amount)
 
+                # Check cleaning results
+                valid_after_cleaning = df['amount'].notna().sum()
+                logger.info(f"💰 Valid amounts after cleaning: {valid_after_cleaning}")
+
                 # If cleaning failed completely, try simple numeric conversion as fallback
-                if df['amount'].notna().sum() == 0:
-                    logger.warning("💰 Cleaning failed, trying simple conversion...")
+                if valid_after_cleaning == 0:
+                    logger.warning("💰 Cleaning failed completely, trying simple conversion...")
                     df['amount'] = pd.to_numeric(df[amount_col], errors='coerce')
+
+                    valid_after_simple = df['amount'].notna().sum()
+                    logger.info(f"💰 Valid amounts after simple conversion: {valid_after_simple}")
+
+                    # If that also failed, try one more approach - maybe the data is already numeric
+                    if valid_after_simple == 0:
+                        logger.warning("💰 Simple conversion also failed, checking raw data...")
+                        # Show what the actual data looks like
+                        sample_raw = df[amount_col].head(10).tolist()
+                        logger.info(f"💰 Raw sample data: {sample_raw}")
+
+                        # Try to convert directly without any cleaning
+                        for i, val in enumerate(sample_raw[:3]):
+                            logger.info(f"💰 Raw value {i}: '{val}' (type: {type(val)})")
+
+                        # If the column exists but has no valid numbers, fill with 0
+                        df['amount'] = 0
+                        logger.warning("💰 Setting all amounts to 0 - data conversion failed")
+                        st.error("❌ 無法轉換金額資料 - 所有金額設為 0")
+                        st.info(f"💡 原始資料範例: {sample_raw[:3]}")
+
+                # Final check
+                final_valid = df['amount'].notna().sum()
+                if final_valid > 0:
+                    final_total = float(df['amount'].sum())
+                    logger.info(f"💰 Final conversion result: {final_valid} valid amounts, total: {final_total}")
+                else:
+                    logger.error("💰 No valid amounts found after all conversion attempts")
 
                 # Show cleaning results - FIX formatting error
                 cleaned_valid = df['amount'].notna().sum()

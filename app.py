@@ -198,15 +198,19 @@ def show_summary_metrics(df: pd.DataFrame, start_date=None, end_date=None, origi
 
     # Calculate metrics for the filtered period (df is already filtered)
     try:
-        total_amount = df['amount'].sum()
+        # Ensure amount is numeric
+        if 'amount' in df.columns:
+            df['amount'] = pd.to_numeric(df['amount'], errors='coerce').fillna(0)
+
+        total_amount = float(df['amount'].sum()) if 'amount' in df.columns else 0.0
         total_transactions = len(df)
-        avg_transaction = total_amount / total_transactions if total_transactions > 0 else 0
+        avg_transaction = float(total_amount / total_transactions) if total_transactions > 0 else 0.0
 
         # Calculate daily average if we have a date range
-        daily_avg = 0
+        daily_avg = 0.0
         if start_date and end_date:
             days_in_period = (end_date - start_date).days + 1
-            daily_avg = total_amount / days_in_period if days_in_period > 0 else 0
+            daily_avg = float(total_amount / days_in_period) if days_in_period > 0 else 0.0
 
         # Get top categories
         top_category = "無資料"
@@ -387,14 +391,30 @@ def show_visualizations(df: pd.DataFrame):
 
             # Top categories table
             st.caption("支出分類排行")
-            category_df = pd.DataFrame({
-                '分類': category_spending.index,
-                '金額': category_spending.values,
-                '佔比': (category_spending.values / category_spending.sum() * 100).round(1)
-            })
-            category_df['金額'] = category_df['金額'].apply(lambda x: f"NT${x:,.0f}")
-            category_df['佔比'] = category_df['佔比'].apply(lambda x: f"{x}%")
-            st.dataframe(category_df, hide_index=True, use_container_width=True)
+            try:
+                # Ensure values are numeric for calculations
+                category_values = pd.to_numeric(category_spending.values, errors='coerce').fillna(0)
+                category_total = float(category_values.sum())
+
+                if category_total > 0:
+                    percentages = (category_values / category_total * 100).round(1)
+                else:
+                    percentages = pd.Series([0.0] * len(category_values))
+
+                category_df = pd.DataFrame({
+                    '分類': category_spending.index,
+                    '金額': category_values,
+                    '佔比': percentages
+                })
+                category_df['金額'] = category_df['金額'].apply(lambda x: f"NT${float(x):,.0f}")
+                category_df['佔比'] = category_df['佔比'].apply(lambda x: f"{float(x)}%")
+                st.dataframe(category_df, hide_index=True, use_container_width=True)
+            except Exception as e:
+                st.error(f"分類統計計算錯誤: {str(e)}")
+                st.dataframe(pd.DataFrame({
+                    '分類': category_spending.index,
+                    '金額': category_spending.values
+                }), hide_index=True, use_container_width=True)
 
     with chart_tab2:
         # Time trends
