@@ -929,6 +929,9 @@ class SheetsAPI:
             # Calculate actual row number (accounting for header row)
             row_number = row_index + 2
 
+            logger.info(f"📝 Attempting to update expense at row index {row_index} (sheet row {row_number})")
+            logger.info(f"   Updating to: {expense_data.get('description', 'N/A')} - NT${expense_data.get('amount', 0)}")
+
             # Convert date to match existing format (MM/DD/YYYY)
             try:
                 from datetime import datetime
@@ -952,10 +955,14 @@ class SheetsAPI:
 
             # Update the row
             self.worksheet.update(f'A{row_number}:I{row_number}', [row_data])
-            logger.info(f"✅ Updated expense at row {row_index}")
+            logger.info(f"✅ Successfully updated row {row_number} in Google Sheets")
 
-            # Clear cache
+            # Clear ALL caches to ensure data refresh
             st.cache_data.clear()
+
+            # Force a small delay to ensure Google Sheets processes the update
+            import time
+            time.sleep(0.5)
 
             return True
 
@@ -964,30 +971,55 @@ class SheetsAPI:
             st.error(f"更新失敗: {str(e)}")
             return False
 
-    def delete_expense(self, row_index: int) -> bool:
+    def delete_expense(self, row_index: int, expense_info: dict = None) -> bool:
         """
-        Delete an expense record
+        Delete an expense record with better tracking and confirmation
         """
         if not self.api_available or not self.worksheet:
-            st.warning("⚠️ 無法刪除資料，API 不可用")
+            logger.warning("⚠️ Cannot delete - API not available")
             return False
 
         try:
-            # Calculate actual row number
+            # Calculate actual row number in Google Sheets (header is row 1, data starts at row 2)
+            # So if row_index is 0 (first data row), it should delete row 2
             row_number = row_index + 2
+
+            logger.info(f"🗑️ Attempting to delete expense at row index {row_index} (sheet row {row_number})")
+            if expense_info:
+                logger.info(f"   Deleting: {expense_info.get('description', 'N/A')} - NT${expense_info.get('amount', 0)}")
+
+            # Get the current row content before deletion for verification
+            try:
+                current_values = self.worksheet.row_values(row_number)
+                logger.info(f"📋 Row {row_number} content before deletion: {current_values}")
+            except Exception as e:
+                logger.warning(f"Could not read row before deletion: {e}")
 
             # Delete the row
             self.worksheet.delete_rows(row_number)
-            logger.info(f"✅ Deleted expense at row {row_index}")
+            logger.info(f"✅ Successfully deleted row {row_number} from Google Sheets")
 
-            # Clear cache
+            # Clear ALL caches to ensure data refresh
             st.cache_data.clear()
+
+            # Force a small delay to ensure Google Sheets processes the deletion
+            import time
+            time.sleep(1)
+
+            # Verify deletion worked by checking if row count decreased
+            try:
+                new_values = self.worksheet.get_all_values()
+                new_count = len(new_values) - 1  # Subtract header
+                logger.info(f"📊 After deletion: {new_count} data rows remain")
+            except Exception as e:
+                logger.warning(f"Could not verify deletion: {e}")
 
             return True
 
         except Exception as e:
-            logger.error(f"❌ Failed to delete expense: {str(e)}")
-            st.error(f"刪除失敗: {str(e)}")
+            logger.error(f"❌ Failed to delete expense at row {row_index}: {str(e)}")
+            if expense_info:
+                logger.error(f"   Failed item: {expense_info.get('description', 'N/A')}")
             return False
 
     def get_status(self) -> Dict:

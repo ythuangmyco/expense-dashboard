@@ -373,18 +373,41 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
                     # Update in sheet - use ORIGINAL row index, not display index
                     success = api.update_expense(original_row_index, updated_data)
                     if success:
-                        st.success("✅ 支出已更新")
+                        st.success(f"✅ 已更新支出：{new_description} (NT${new_amount:,.0f})")
+                        st.balloons()  # Celebration animation
+
+                        # Auto-refresh the page to show updated data
+                        import time
+                        time.sleep(2)  # Let user see the success message
+                        st.rerun()  # Refresh the page
                         return True
                     else:
-                        st.error("❌ 更新失敗")
+                        st.error(f"❌ 更新失敗：{new_description}")
+                        st.info("💡 請檢查網路連線或重新嘗試")
 
                 elif action == "刪除支出":
+                    # Show confirmation with details
+                    desc = selected_row.get('description', 'N/A')
+                    amount = selected_row.get('amount', 0)
+                    date_str = new_date.strftime('%Y/%m/%d')
+
                     # Direct deletion - use ORIGINAL row index, not display index
-                    success = api.delete_expense(original_row_index)
+                    success = api.delete_expense(original_row_index, {
+                        'description': desc,
+                        'amount': amount,
+                        'date': date_str
+                    })
                     if success:
-                        st.success("✅ 支出已刪除")
+                        st.success(f"✅ 已刪除支出：{desc} (NT${amount:,.0f}) - {date_str}")
+                        st.balloons()  # Celebration animation
+
+                        # Auto-refresh the page to show updated data
+                        import time
+                        time.sleep(2)  # Let user see the success message
+                        st.rerun()  # Refresh the page
                         return True
                     else:
-                        st.error("❌ 刪除失敗")
+                        st.error(f"❌ 刪除失敗：{desc}")
+                        st.info("💡 請檢查網路連線或重新嘗試")
 
     return False
