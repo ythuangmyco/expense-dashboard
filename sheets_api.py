@@ -98,7 +98,7 @@ class SheetsAPI:
                                     total = sum(numeric_values)
                                     logger.info(f"💰 Worksheet '{self.worksheet.title}' column '{col_name}' total: {total:,.0f}")
                                     if total > 2000000:
-                                        st.success(f"🎯 在工作表 '{self.worksheet.title}' 發現大額總計: {total:,.0f}")
+                                        logger.info(f"🎯 Found large total in worksheet '{self.worksheet.title}': {total:,.0f}")
 
                     except Exception as e:
                         logger.warning(f"⚠️ Could not check row count: {e}")
@@ -108,8 +108,8 @@ class SheetsAPI:
                     logger.error(f"Available worksheets: {[(ws.title, ws.id) for ws in worksheets]}")
 
                     # Check other worksheets to see if they have the expected data
-                    st.warning(f"⚠️ 找不到指定的工作表 GID {WORKSHEET_GID}")
-                    st.info("🔍 檢查其他可用的工作表...")
+                    logger.warning(f"⚠️ Worksheet GID {WORKSHEET_GID} not found")
+                    logger.info("🔍 Checking other available worksheets...")
 
                     for ws in worksheets:
                         try:
@@ -136,8 +136,8 @@ class SheetsAPI:
                                         total = sum(numeric_values)
                                         logger.info(f"💰 Alternative worksheet '{ws.title}' column '{col_name}' total: {total:,.0f}")
                                         if total > 2000000:
-                                            st.error(f"🎯 發現正確資料在工作表 '{ws.title}' (GID: {ws.id})!")
-                                            st.info(f"總額: NT${total:,.0f} - 請更新設定使用 GID {ws.id}")
+                                            logger.error(f"🎯 Found correct data in worksheet '{ws.title}' (GID: {ws.id})!")
+                                            logger.info(f"Total: NT${total:,.0f} - should update config to use GID {ws.id}")
 
                         except Exception as e:
                             logger.info(f"Could not check worksheet {ws.title}: {e}")
@@ -157,39 +157,32 @@ class SheetsAPI:
 
     def load_data(self) -> Optional[pd.DataFrame]:
         """
-        Load expense data with progressive fallback
-        1. Try CSV export first (cleaner data format)
-        2. Fall back to Google Sheets API if needed
-        3. Return empty DataFrame if all fails
+        Load expense data - prioritize API since CSV requires authentication
         """
 
-        # Try CSV first - it has cleaner data format
-        logger.info("🚀 Attempting to load data via CSV export first...")
-        try:
-            df_csv = self._load_from_csv()
-            if not df_csv.empty:
-                logger.info(f"✅ CSV loaded {len(df_csv)} records successfully")
-                st.info("📄 使用 CSV 模式載入資料 (較乾淨的格式)")
-                return df_csv
-            else:
-                logger.warning("⚠️ CSV returned empty DataFrame")
-        except Exception as e:
-            logger.warning(f"⚠️ CSV failed: {str(e)}")
-
-        # Fallback to API method
+        # Try API first since it's authenticated and available
         if self.api_available and self.worksheet:
             try:
-                logger.info("🚀 Falling back to Google Sheets API...")
+                logger.info("🚀 Loading data via Google Sheets API...")
                 df = self._load_from_api()
                 if not df.empty:
                     logger.info(f"✅ API loaded {len(df)} records successfully")
-                    st.info("🔗 使用 Google Sheets API 載入資料")
                     return df
                 else:
                     logger.warning("⚠️ API returned empty DataFrame")
             except Exception as e:
                 logger.error(f"❌ API failed: {str(e)}")
                 st.error(f"Google Sheets API 錯誤: {str(e)}")
+
+        # CSV fallback (likely to fail due to authentication)
+        logger.info("🚀 Attempting CSV fallback...")
+        try:
+            df_csv = self._load_from_csv()
+            if not df_csv.empty:
+                logger.info(f"✅ CSV loaded {len(df_csv)} records successfully")
+                return df_csv
+        except Exception as e:
+            logger.warning(f"⚠️ CSV failed as expected: {str(e)}")
 
         # Show API status
         if not self.api_available:
@@ -249,10 +242,11 @@ class SheetsAPI:
                 logger.info(f"💰 Initial conversion: {valid_amounts} valid amounts, total: {total}")
 
                 if total > 0:
-                    st.info(f"📊 載入原始資料: {len(df)} 筆, 總額: NT${total:,.0f}")
+                    # Just log, don't show to user
+                    logger.info(f"📊 Raw data loaded: {len(df)} rows, total: NT${total:,.0f}")
                 else:
-                    st.warning(f"📊 載入原始資料: {len(df)} 筆, 總額: NT$0 (金額轉換失敗)")
-                    st.info(f"💡 原始金額樣本: {sample_amounts}")
+                    logger.warning(f"📊 Raw data loaded: {len(df)} rows, total: NT$0 (conversion failed)")
+                    logger.info(f"💡 Sample amounts: {sample_amounts}")
 
             except Exception as e:
                 logger.error(f"❌ Error calculating initial total: {e}")
@@ -284,16 +278,15 @@ class SheetsAPI:
             if response.status_code == 200:
                 content_type = response.headers.get('content-type', '')
                 if 'text/html' in content_type:
-                    logger.warning("📄 CSV export returned HTML (likely authentication required)")
-                    st.warning("⚠️ CSV 匯出需要驗證，改用 API 模式")
-                    return pd.DataFrame()
+                    logger.warning("📄 CSV export returned HTML (authentication required)")
+                    # Don't return empty - let it fall back to API
+                    raise Exception("CSV export requires authentication")
 
                 # Check if response contains actual CSV data
                 preview = response.text[:200]
                 if '日期,類型_1,類型_2,金額' not in preview:
                     logger.warning("📄 CSV response does not contain expected headers")
                     logger.info(f"📄 Response preview: {preview}")
-                    st.warning("⚠️ CSV 格式不符，改用 API 模式")
                     return pd.DataFrame()
 
             response.raise_for_status()
@@ -391,13 +384,11 @@ class SheetsAPI:
                 valid_count = numeric_values.notna().sum()
                 logger.info(f"💰 Column '{col}' total: {col_total} ({valid_count} valid values)")
 
-                # If this column has the expected total (~2.5M), flag it
+                # Log findings but don't show to user
                 if col_total > 2000000:
                     logger.info(f"🎯 FOUND LIKELY CORRECT AMOUNT COLUMN: '{col}' with total {col_total}")
-                    st.info(f"🎯 發現可能的正確金額欄位: '{col}' 總額: NT${col_total:,.0f}")
                 elif col_total > 100000:
                     logger.info(f"💰 Column '{col}' has reasonable total: {col_total}")
-                    st.info(f"💡 欄位 '{col}' 總額: NT${col_total:,.0f}")
 
             except Exception as e:
                 logger.info(f"💰 Could not calculate total for '{col}': {e}")
@@ -567,10 +558,8 @@ class SheetsAPI:
                     best_total_float = float(best_total) if best_total else 0.0
                     if best_total_float < 1000000:
                         logger.warning(f"💰 Amount total {best_total_float} is much lower than expected ~2.5M")
-                        st.warning(f"⚠️ 計算的總金額 NT${best_total_float:,.0f} 遠低於預期的 250萬+")
-                        st.info("💡 可能需要檢查工作表或欄位設定")
-                    elif best_total_float > 2000000:
-                        st.success(f"✅ 找到正確的金額總計: NT${best_total_float:,.0f}")
+                    else:
+                        logger.info(f"✅ Found correct amount total: NT${best_total_float:,.0f}")
                 except Exception as e:
                     logger.error(f"❌ Error formatting best total: {e}")
                     st.warning("⚠️ 金額計算發生錯誤")
@@ -593,7 +582,7 @@ class SheetsAPI:
                 logger.info(f"💰 Cleaning amount data format...")
 
                 def clean_amount(value):
-                    """Clean amount values - simplified for CSV data"""
+                    """Clean amount values - handle both CSV and API formats"""
                     try:
                         if pd.isna(value) or value == '' or value is None:
                             return None
@@ -607,13 +596,36 @@ class SheetsAPI:
                         except:
                             pass
 
-                        # Simple cleaning for CSV data (remove quotes and commas)
-                        str_val = str_val.replace('"', '')  # Remove quotes from CSV
-                        str_val = str_val.replace(',', '')  # Remove thousands separators
+                        # Handle corrupted API format: '240.00′,′240.00 ′ , ′ 26,495.00'
+                        # Extract all numeric values and take the largest one
+                        import re
+
+                        # Find all patterns that look like numbers (with or without commas)
+                        number_pattern = r'[\d,]+\.?\d*'
+                        matches = re.findall(number_pattern, str_val)
+
+                        amounts = []
+                        for match in matches:
+                            try:
+                                # Clean each found number
+                                clean_num = match.replace(',', '')
+                                if clean_num and clean_num != '':
+                                    amounts.append(float(clean_num))
+                            except:
+                                continue
+
+                        # Return the largest amount found
+                        if amounts:
+                            result = max(amounts)
+                            logger.info(f"💰 Cleaned '{str_val}' → {result}")
+                            return result
+
+                        # Fallback: simple cleaning for normal CSV data
+                        str_val = str_val.replace('"', '')  # Remove quotes
+                        str_val = str_val.replace(',', '')  # Remove commas
                         str_val = str_val.replace('$', '')  # Remove dollar signs
                         str_val = str_val.strip()
 
-                        # Convert to float
                         if str_val and str_val not in ['', '0', '0.0', '0.00']:
                             return float(str_val)
                         else:
@@ -778,10 +790,9 @@ class SheetsAPI:
                     try:
                         final_total = float(df['amount'].sum()) if df['amount'].notna().any() else 0.0
                         logger.info(f"💰 Final total after all processing: {final_total}")
-                        st.success(f"✅ 處理完成: {len(df)} 筆有效記錄, 總額: NT${final_total:,.0f}")
+                        # Don't show processing details to user
                     except Exception as e:
                         logger.error(f"❌ Error calculating final total: {e}")
-                        st.success(f"✅ 處理完成: {len(df)} 筆有效記錄")
 
                     # Show summary of what was filtered out
                     if rows_before > rows_after:
@@ -805,10 +816,9 @@ class SheetsAPI:
                     try:
                         final_total = float(df['amount'].sum()) if df['amount'].notna().any() else 0.0
                         logger.info(f"💰 Final total after all processing: {final_total}")
-                        st.success(f"✅ 處理完成: {len(df)} 筆有效記錄, 總額: NT${final_total:,.0f}")
+                        # Don't show processing details to user
                     except Exception as e:
                         logger.error(f"❌ Error calculating final total: {e}")
-                        st.success(f"✅ 處理完成: {len(df)} 筆有效記錄")
 
                     total_filtered = rows_before - rows_after
                     if total_filtered > 0:

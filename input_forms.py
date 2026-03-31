@@ -265,7 +265,15 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
     if 'date' in display_df.columns:
         display_df['日期'] = display_df['date'].dt.strftime('%m/%d')
     display_df['描述'] = display_df.get('description', '')
-    display_df['金額'] = display_df.get('amount', 0).apply(lambda x: f"NT${x:,.0f}")
+
+    # Safely format amounts - ensure they're numeric first
+    def safe_format_amount(x):
+        try:
+            return f"NT${float(x):,.0f}"
+        except:
+            return "NT$0"
+
+    display_df['金額'] = display_df.get('amount', 0).apply(safe_format_amount)
     display_df['帳戶'] = display_df.get('account', '')
 
     # Create selection interface
