@@ -144,14 +144,30 @@ class SheetsAPI:
         df = df.dropna(how='all')
         df = df.loc[:, (df != '').any(axis=0)]
 
-        # Apply column mapping (Chinese to English)
-        df = df.rename(columns=COLUMN_MAPPING)
+        # Debug: Show actual column names
+        logger.info(f"📋 Actual columns in sheet: {list(df.columns)}")
+        if not df.empty:
+            logger.info(f"📊 Sample data: {df.head(1).to_dict('records')}")
 
-        # Remove rows where critical fields are missing
+        # Apply column mapping (Chinese to English) - only for columns that exist
+        existing_mapping = {k: v for k, v in COLUMN_MAPPING.items() if k in df.columns}
+        df = df.rename(columns=existing_mapping)
+
+        logger.info(f"✅ Mapped columns: {existing_mapping}")
+        logger.info(f"🔄 Final columns: {list(df.columns)}")
+
+        # Remove rows where critical fields are missing (check what fields actually exist)
         critical_fields = ['date', 'amount']
-        for field in critical_fields:
-            if field in df.columns:
+        available_critical = [field for field in critical_fields if field in df.columns]
+
+        logger.info(f"🎯 Critical fields available: {available_critical}")
+
+        if available_critical:
+            for field in available_critical:
                 df = df[df[field].notna() & (df[field] != '')]
+        else:
+            logger.warning(f"⚠️ No critical fields found! Available columns: {list(df.columns)}")
+            st.warning(f"找不到必要欄位 (date/amount)。實際欄位: {list(df.columns)}")
 
         if df.empty:
             logger.warning("⚠️ No valid data found after cleaning")
@@ -159,26 +175,33 @@ class SheetsAPI:
 
         # Data type conversion
         try:
-            # Convert date column
-            if 'date' in df.columns:
-                df['date'] = pd.to_datetime(df['date'], errors='coerce')
+            # Convert date column if it exists
+            date_cols = [col for col in df.columns if 'date' in col.lower() or '日期' in col]
+            if date_cols:
+                date_col = date_cols[0]
+                logger.info(f"📅 Converting date column: {date_col}")
+                df['date'] = pd.to_datetime(df[date_col], errors='coerce')
 
-            # Convert amount column
-            if 'amount' in df.columns:
-                df['amount'] = pd.to_numeric(df['amount'], errors='coerce')
+            # Convert amount column if it exists
+            amount_cols = [col for col in df.columns if 'amount' in col.lower() or '金額' in col]
+            if amount_cols:
+                amount_col = amount_cols[0]
+                logger.info(f"💰 Converting amount column: {amount_col}")
+                df['amount'] = pd.to_numeric(df[amount_col], errors='coerce')
 
-            # Remove rows with invalid date or amount
-            df = df.dropna(subset=['date', 'amount'])
+            # Only remove rows with invalid data if both date and amount exist
+            if 'date' in df.columns and 'amount' in df.columns:
+                df = df.dropna(subset=['date', 'amount'])
 
-            # Add derived fields for analysis
+            # Add derived fields for analysis (only if date column exists)
             if 'date' in df.columns:
                 df['year'] = df['date'].dt.year
                 df['month'] = df['date'].dt.month
                 df['month_year'] = df['date'].dt.to_period('M')
                 df['weekday'] = df['date'].dt.day_name()
 
-            # Ensure text fields are strings
-            text_fields = ['description', 'category_type', 'category_emoji', 'account', 'country', 'location', 'notes']
+            # Ensure text fields are strings (only for fields that exist)
+            text_fields = ['description', 'category_type', 'type_1', 'account', 'country', 'location', 'notes']
             for field in text_fields:
                 if field in df.columns:
                     df[field] = df[field].astype(str).fillna('')
@@ -188,6 +211,8 @@ class SheetsAPI:
         except Exception as e:
             logger.error(f"❌ Error processing data: {str(e)}")
             st.error(f"資料處理錯誤: {str(e)}")
+            # Return empty DataFrame with expected columns if processing fails
+            return pd.DataFrame(columns=['date', 'amount', 'description', 'account'])
 
         return df
 

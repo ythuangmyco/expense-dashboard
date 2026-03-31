@@ -111,6 +111,11 @@ def show_summary_metrics(df: pd.DataFrame):
         st.info("📊 尚無支出資料")
         return
 
+    # Check if required columns exist
+    if 'date' not in df.columns or 'amount' not in df.columns:
+        st.warning(f"📊 資料結構不完整。可用欄位: {list(df.columns)}")
+        return
+
     st.subheader("📈 本月概況")
 
     # Calculate metrics
@@ -118,10 +123,14 @@ def show_summary_metrics(df: pd.DataFrame):
     current_year = datetime.now().year
 
     # Filter current month data
-    current_month_df = df[
-        (df['date'].dt.month == current_month) &
-        (df['date'].dt.year == current_year)
-    ]
+    try:
+        current_month_df = df[
+            (df['date'].dt.month == current_month) &
+            (df['date'].dt.year == current_year)
+        ]
+    except Exception as e:
+        st.error(f"日期處理錯誤: {str(e)}")
+        return
 
     # Calculate metrics
     total_this_month = current_month_df['amount'].sum() if not current_month_df.empty else 0
@@ -175,32 +184,63 @@ def show_recent_transactions(df: pd.DataFrame, limit: int = 10):
     if df.empty:
         return
 
+    # Check if required columns exist
+    required_cols = ['date', 'amount']
+    if not all(col in df.columns for col in required_cols):
+        st.info("📋 最近交易資料不完整")
+        return
+
     st.subheader("📋 最近交易")
 
-    # Sort by date and get recent transactions
-    recent_df = df.sort_values('date', ascending=False).head(limit)
+    try:
+        # Sort by date and get recent transactions
+        recent_df = df.sort_values('date', ascending=False).head(limit)
 
-    # Create display DataFrame
-    display_df = recent_df.copy()
-    display_df['日期'] = display_df['date'].dt.strftime('%m/%d')
-    display_df['分類'] = display_df.get('category_emoji', '') + ' ' + display_df.get('category_type', '')
-    display_df['金額'] = display_df['amount'].apply(lambda x: f"NT${x:,.0f}")
+        # Create display DataFrame
+        display_df = recent_df.copy()
+        display_df['日期'] = display_df['date'].dt.strftime('%m/%d')
 
-    # Display as table
-    st.dataframe(
-        display_df[['日期', '分類', 'description', '金額', 'account']].rename(columns={
-            'description': '描述',
-            'account': '帳戶'
-        }),
-        use_container_width=True,
-        hide_index=True
-    )
+        # Handle category display - check what columns exist
+        if 'category_type' in display_df.columns:
+            display_df['分類'] = display_df['category_type']
+        else:
+            display_df['分類'] = '未分類'
+
+        display_df['金額'] = display_df['amount'].apply(lambda x: f"NT${x:,.0f}")
+
+        # Create columns list based on what's available
+        display_cols = ['日期', '分類', '金額']
+        rename_dict = {}
+
+        if 'description' in display_df.columns:
+            display_cols.insert(-1, 'description')
+            rename_dict['description'] = '描述'
+
+        if 'account' in display_df.columns:
+            display_cols.append('account')
+            rename_dict['account'] = '帳戶'
+
+        # Display as table
+        st.dataframe(
+            display_df[display_cols].rename(columns=rename_dict),
+            use_container_width=True,
+            hide_index=True
+        )
+
+    except Exception as e:
+        st.error(f"最近交易顯示錯誤: {str(e)}")
 
 
 def show_visualizations(df: pd.DataFrame):
     """Display interactive charts"""
     if df.empty:
         st.info("📊 需要更多資料才能顯示圖表")
+        return
+
+    # Check required columns
+    required_cols = ['amount']
+    if not all(col in df.columns for col in required_cols):
+        st.warning(f"📊 圖表功能需要完整資料。缺少欄位: {[col for col in required_cols if col not in df.columns]}")
         return
 
     st.subheader("📊 支出分析")
