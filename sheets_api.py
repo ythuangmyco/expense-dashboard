@@ -327,11 +327,19 @@ class SheetsAPI:
             # Calculate actual row number (accounting for header row)
             row_number = row_index + 2
 
-            # Prepare row data
+            # Convert date to match existing format (MM/DD/YYYY)
+            try:
+                from datetime import datetime
+                date_obj = datetime.strptime(expense_data.get('date', ''), '%Y-%m-%d')
+                formatted_date = date_obj.strftime('%m/%d/%Y')
+            except:
+                formatted_date = expense_data.get('date', '')
+
+            # Prepare row data in EXACT Google Form format
             row_data = [
-                expense_data.get('date', ''),
-                expense_data.get('type_1', ''),
-                expense_data.get('category_type', ''),
+                formatted_date,                          # MM/DD/YYYY format
+                expense_data.get('type_1', ''),          # 📅 日常 or ✈️ 旅行
+                expense_data.get('category_type', ''),   # 🍽️ 飲食, 👶 寶寶 etc.
                 expense_data.get('amount', ''),
                 expense_data.get('account', ''),
                 expense_data.get('description', ''),

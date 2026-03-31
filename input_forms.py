@@ -287,20 +287,20 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
                     index=ACCOUNTS.index(selected_row.get('account', ACCOUNTS[0])) if selected_row.get('account') in ACCOUNTS else 0
                 )
 
-            # Category selection
-            current_category_emoji = selected_row.get('category_emoji', list(CATEGORIES.keys())[0])
-            new_category_emoji = st.selectbox(
-                "大分類",
-                options=list(CATEGORIES.keys()),
-                index=list(CATEGORIES.keys()).index(current_category_emoji) if current_category_emoji in CATEGORIES.keys() else 0
+            # Type_1 selection (Daily vs Travel)
+            current_type_1 = selected_row.get('type_1', TYPE_1_OPTIONS[0])
+            new_type_1 = st.selectbox(
+                "類型",
+                options=TYPE_1_OPTIONS,
+                index=TYPE_1_OPTIONS.index(current_type_1) if current_type_1 in TYPE_1_OPTIONS else 0
             )
 
-            sub_categories = CATEGORIES.get(new_category_emoji, ["其他"])
-            current_category_type = selected_row.get('category_type', sub_categories[0])
+            # Category selection (Type_2)
+            current_category_type = selected_row.get('category_type', CATEGORIES[0])
             new_category_type = st.selectbox(
-                "細分類",
-                options=sub_categories,
-                index=sub_categories.index(current_category_type) if current_category_type in sub_categories else 0
+                "分類",
+                options=CATEGORIES,
+                index=CATEGORIES.index(current_category_type) if current_category_type in CATEGORIES else 0
             )
 
             new_amount = st.number_input(
@@ -336,15 +336,14 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
                 # Prepare updated data
                 updated_data = {
                     "date": new_date.strftime("%Y-%m-%d"),
-                    "category_emoji": new_category_emoji,
+                    "type_1": new_type_1,
                     "category_type": new_category_type,
                     "amount": new_amount,
                     "account": new_account,
                     "description": new_description,
                     "country": selected_row.get('country', DEFAULT_COUNTRY),
                     "location": selected_row.get('location', DEFAULT_LOCATION),
-                    "notes": selected_row.get('notes', ''),
-                    "combined_location": f"{selected_row.get('country', DEFAULT_COUNTRY)}-{selected_row.get('location', DEFAULT_LOCATION)}"
+                    "notes": selected_row.get('notes', '')
                 }
 
                 # Update in sheet
@@ -354,12 +353,12 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
                     return True
 
             if delete_submitted:
-                # Confirm deletion
-                st.warning("⚠️ 確定要刪除這筆支出嗎？")
-                if st.button("確認刪除", type="secondary"):
-                    success = api.delete_expense(selected_idx)
-                    if success:
-                        st.success("✅ 支出已刪除")
-                        return True
+                # Direct deletion without confirmation button (to avoid form issues)
+                success = api.delete_expense(selected_idx)
+                if success:
+                    st.success("✅ 支出已刪除")
+                    return True
+                else:
+                    st.error("❌ 刪除失敗")
 
     return False
