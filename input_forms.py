@@ -12,6 +12,7 @@ from config import (
     DEFAULT_TYPE_1, DEFAULT_COUNTRY, DEFAULT_LOCATION, DEFAULT_ACCOUNT
 )
 from sheets_api import get_sheets_api
+from auth import get_current_user
 
 
 # Quick entry section removed as requested
@@ -97,10 +98,18 @@ def expense_input_form(df: pd.DataFrame) -> bool:
                 help="支出日期"
             )
         with col2:
+            # Get current user and set as default if logged in
+            current_user = get_current_user()
+            default_index = 0  # Default to "請選擇帳戶..."
+
+            # If current user matches an account, set as default
+            if current_user and current_user in ACCOUNTS:
+                default_index = ACCOUNTS.index(current_user) + 1  # +1 because of "請選擇帳戶..." at index 0
+
             account = st.selectbox(
                 "帳戶 👤",
                 options=["請選擇帳戶..."] + ACCOUNTS,
-                index=0,  # No default selection
+                index=default_index,
                 help="記帳帳戶"
             )
 
