@@ -99,8 +99,8 @@ def expense_input_form(df: pd.DataFrame) -> bool:
         with col2:
             account = st.selectbox(
                 "帳戶 👤",
-                options=ACCOUNTS,
-                index=0,  # Default to first account
+                options=["請選擇帳戶..."] + ACCOUNTS,
+                index=0,  # No default selection
                 help="記帳帳戶"
             )
 
@@ -204,6 +204,10 @@ def expense_input_form(df: pd.DataFrame) -> bool:
 
             if amount <= 0:
                 st.error("請填寫有效的金額")
+                return False
+
+            if account == "請選擇帳戶...":
+                st.error("請選擇記帳帳戶")
                 return False
 
             # Prepare expense data
