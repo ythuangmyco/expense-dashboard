@@ -122,12 +122,13 @@ def expense_input_form(df: pd.DataFrame) -> bool:
         # Get smart suggestions for this category
         suggestions = smart_suggestions(df, category_type)
 
-        # Amount input (no default value)
+        # Amount input (empty by default)
         amount = st.number_input(
             "金額 💰",
             min_value=0,
             step=10,
-            value=0,
+            value=None,
+            placeholder="請輸入金額...",
             help="支出金額"
         )
 
@@ -202,7 +203,7 @@ def expense_input_form(df: pd.DataFrame) -> bool:
                 st.error("請填寫支出描述")
                 return False
 
-            if amount <= 0:
+            if not amount or amount <= 0:
                 st.error("請填寫有效的金額")
                 return False
 
