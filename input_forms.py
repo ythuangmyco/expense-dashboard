@@ -8,8 +8,8 @@ import pandas as pd
 from datetime import datetime, date
 from typing import Dict, List, Optional
 from config import (
-    QUICK_FAVORITES, CATEGORIES, ACCOUNTS, LOCATIONS_MAP,
-    DEFAULT_COUNTRY, DEFAULT_LOCATION, DEFAULT_ACCOUNT
+    QUICK_FAVORITES, TYPE_1_OPTIONS, CATEGORIES, CATEGORY_DISPLAY, ACCOUNTS, LOCATIONS_MAP,
+    DEFAULT_TYPE_1, DEFAULT_COUNTRY, DEFAULT_LOCATION, DEFAULT_ACCOUNT
 )
 from sheets_api import get_sheets_api
 
@@ -30,21 +30,20 @@ def quick_entry_section(df: pd.DataFrame) -> Optional[Dict]:
             if st.button(
                 name,
                 key=f"quick_{i}",
-                help=f"類別: {data['category_type']} | 預設金額: NT${data['amount']}",
+                help=f"類別: {CATEGORY_DISPLAY.get(data['category_type'], data['category_type'])} | 預設金額: NT${data['amount']}",
                 use_container_width=True
             ):
                 # Return quick entry data
                 return {
                     "date": datetime.now().strftime("%Y-%m-%d"),
-                    "category_emoji": data["category_emoji"],
+                    "type_1": data["type_1"],
                     "category_type": data["category_type"],
                     "amount": data["amount"],
                     "account": DEFAULT_ACCOUNT,
                     "description": name.split(" ", 1)[1] if " " in name else name,
                     "country": DEFAULT_COUNTRY,
                     "location": DEFAULT_LOCATION,
-                    "notes": "",
-                    "combined_location": f"{DEFAULT_COUNTRY}-{DEFAULT_LOCATION}"
+                    "notes": ""
                 }
 
     return None
@@ -132,22 +131,19 @@ def expense_input_form(df: pd.DataFrame) -> bool:
                 help="記帳帳戶"
             )
 
-        # Category selection with emoji
-        category_emoji = st.selectbox(
-            "大分類 🏷️",
-            options=list(CATEGORIES.keys()),
+        # Type_1 selection (Daily vs Travel)
+        type_1 = st.selectbox(
+            "類型 📅",
+            options=TYPE_1_OPTIONS,
             index=0,
-            help="選擇支出大分類"
+            help="選擇支出類型"
         )
 
-        # Get category type (remove emoji for internal use)
-        category_name = category_emoji.split(" ", 1)[1]
-
-        # Sub-category based on main category
-        sub_categories = CATEGORIES.get(category_emoji, ["其他"])
+        # Type_2 selection (Specific category)
         category_type = st.selectbox(
-            "細分類 📋",
-            options=sub_categories,
+            "分類 🏷️",
+            options=CATEGORIES,
+            format_func=lambda x: CATEGORY_DISPLAY.get(x, x),
             help="選擇具體的支出類型"
         )
 
@@ -242,15 +238,14 @@ def expense_input_form(df: pd.DataFrame) -> bool:
             # Prepare expense data
             expense_data = {
                 "date": expense_date.strftime("%Y-%m-%d"),
-                "category_emoji": category_emoji,
+                "type_1": type_1,
                 "category_type": category_type,
                 "amount": amount,
                 "account": account,
                 "description": description.strip(),
                 "country": country,
                 "location": location,
-                "notes": notes.strip(),
-                "combined_location": f"{country}-{location}"
+                "notes": notes.strip()
             }
 
             # Add to sheet

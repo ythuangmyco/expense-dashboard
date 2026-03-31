@@ -201,18 +201,17 @@ class SheetsAPI:
             return False
 
         try:
-            # Prepare row data in correct column order
+            # Prepare row data in correct column order (matching Google Form structure)
             row_data = [
                 expense_data.get('date', ''),
-                expense_data.get('category_emoji', ''),
-                expense_data.get('category_type', ''),
+                expense_data.get('type_1', ''),          # Daily vs Travel
+                expense_data.get('category_type', ''),   # Specific category
                 expense_data.get('amount', ''),
                 expense_data.get('account', ''),
                 expense_data.get('description', ''),
                 expense_data.get('country', ''),
                 expense_data.get('location', ''),
-                expense_data.get('notes', ''),
-                expense_data.get('combined_location', '')  # 合併地點
+                expense_data.get('notes', '')
             ]
 
             # Append to worksheet
@@ -244,19 +243,18 @@ class SheetsAPI:
             # Prepare row data
             row_data = [
                 expense_data.get('date', ''),
-                expense_data.get('category_emoji', ''),
+                expense_data.get('type_1', ''),
                 expense_data.get('category_type', ''),
                 expense_data.get('amount', ''),
                 expense_data.get('account', ''),
                 expense_data.get('description', ''),
                 expense_data.get('country', ''),
                 expense_data.get('location', ''),
-                expense_data.get('notes', ''),
-                expense_data.get('combined_location', '')
+                expense_data.get('notes', '')
             ]
 
             # Update the row
-            self.worksheet.update(f'A{row_number}:J{row_number}', [row_data])
+            self.worksheet.update(f'A{row_number}:I{row_number}', [row_data])
             logger.info(f"✅ Updated expense at row {row_index}")
 
             # Clear cache

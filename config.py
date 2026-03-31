@@ -12,60 +12,98 @@ SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=cs
 # Authentication
 FAMILY_PIN = "0727"  # Simple family PIN protection
 
-# Column Mapping (Chinese to English for internal processing)
+# Column Mapping (matching your Google Form structure)
 COLUMN_MAPPING = {
     '日期': 'date',
-    '類型_1': 'category_emoji',
-    '類型_2': 'category_type',
+    'Type_1': 'type_1',          # Daily vs Travel
+    'Type_2': 'category_type',   # Specific category (dining, transportation, etc.)
     '金額': 'amount',
-    '帳戶': 'account',
+    '帳戶': 'account',           # 菇菇 or 過兒
     '名稱': 'description',
     '國家': 'country',
     '地點': 'location',
-    '備註': 'notes',
-    '合併地點': 'combined_location'  # As per recent updates
+    '備註': 'notes'
 }
 
-# Quick Favorites for mobile-first entry
+# Type_1 Options (Daily vs Travel)
+TYPE_1_OPTIONS = ["📅 Daily", "✈️ Travel"]
+
+# Quick Favorites for mobile-first entry (matching your form categories)
 QUICK_FAVORITES = {
-    "☕ 咖啡": {"category_emoji": "🍽️", "category_type": "飲食", "amount": 150},
-    "🚗 停車": {"category_emoji": "🚗", "category_type": "交通", "amount": 100},
-    "⛽ 加油": {"category_emoji": "🚗", "category_type": "交通", "amount": 1200},
-    "🍜 午餐": {"category_emoji": "🍽️", "category_type": "飲食", "amount": 200},
-    "🛒 生活用品": {"category_emoji": "🛍️", "category_type": "日用品", "amount": 300},
-    "🚌 公車": {"category_emoji": "🚗", "category_type": "交通", "amount": 30},
-    "🥤 飲料": {"category_emoji": "🍽️", "category_type": "飲食", "amount": 80},
-    "🎬 娛樂": {"category_emoji": "🎯", "category_type": "娛樂", "amount": 500}
+    "☕ 咖啡": {"type_1": "📅 Daily", "category_type": "dining", "amount": 150},
+    "🚗 停車": {"type_1": "📅 Daily", "category_type": "transportation", "amount": 100},
+    "⛽ 加油": {"type_1": "📅 Daily", "category_type": "transportation", "amount": 1200},
+    "🍜 午餐": {"type_1": "📅 Daily", "category_type": "dining", "amount": 200},
+    "🛒 生活用品": {"type_1": "📅 Daily", "category_type": "household", "amount": 300},
+    "🚌 公車": {"type_1": "📅 Daily", "category_type": "transportation", "amount": 30},
+    "🥤 飲料": {"type_1": "📅 Daily", "category_type": "dining", "amount": 80},
+    "🎬 娛樂": {"type_1": "📅 Daily", "category_type": "entertainment", "amount": 500}
 }
 
-# Category Options
-CATEGORIES = {
-    "🍽️ 飲食": ["早餐", "午餐", "晚餐", "飲料", "零食", "咖啡"],
-    "🚗 交通": ["加油", "停車", "公車", "計程車", "高鐵", "機票"],
-    "🛍️ 購物": ["衣服", "日用品", "電子產品", "書籍", "禮物"],
-    "🎯 娛樂": ["電影", "遊戲", "旅遊", "運動", "音樂"],
-    "🏠 居住": ["房租", "水電", "網路", "維修", "清潔"],
-    "💊 醫療": ["看診", "藥品", "檢查", "保險"],
-    "📚 教育": ["學費", "書籍", "課程", "文具"],
-    "💰 其他": ["轉帳", "提款", "匯費", "雜項"]
+# Category Options (Type_2 from your Google Form - 17 categories)
+CATEGORIES = [
+    "dining",          # 飲食
+    "transportation",  # 交通
+    "baby",           # 嬰兒用品
+    "household",      # 家用品
+    "insurance",      # 保險
+    "medical",        # 醫療
+    "education",      # 教育
+    "accommodation",  # 住宿
+    "tickets",        # 票券
+    "clothing",       # 衣飾
+    "entertainment",  # 娛樂
+    "beauty",         # 美容
+    "taxes",          # 稅務
+    "communication",  # 通訊
+    "housing",        # 房屋
+    "gifts",          # 禮品
+    "pets"            # 寵物
+]
+
+# Category Display Names (for UI)
+CATEGORY_DISPLAY = {
+    "dining": "🍽️ 飲食",
+    "transportation": "🚗 交通",
+    "baby": "👶 嬰兒用品",
+    "household": "🏠 家用品",
+    "insurance": "🛡️ 保險",
+    "medical": "💊 醫療",
+    "education": "📚 教育",
+    "accommodation": "🏨 住宿",
+    "tickets": "🎫 票券",
+    "clothing": "👕 衣飾",
+    "entertainment": "🎯 娛樂",
+    "beauty": "💄 美容",
+    "taxes": "💰 稅務",
+    "communication": "📱 通訊",
+    "housing": "🏘️ 房屋",
+    "gifts": "🎁 禮品",
+    "pets": "🐕 寵物"
 }
 
-# Account Options (Family Members)
-ACCOUNTS = ["YT", "Liu", "共同", "其他"]
+# Account Options (Family Members - matching your Google Form)
+ACCOUNTS = ["菇菇", "過兒"]
 
-# Location Hierarchy
+# Location Hierarchy (matching your Google Form exactly)
 LOCATIONS_MAP = {
-    "台灣": ["高雄", "臺南", "台中", "台北", "桃園", "新竹", "嘉義", "屏東", "其他"],
-    "日本": ["九州", "沖繩", "東京", "大阪", "京都", "其他"],
-    "澳洲": ["墨爾本", "雪梨", "布里斯本", "伯斯", "其他"],
-    "美國": ["加州", "紐約", "德州", "佛羅里達", "其他"],
-    "其他": ["線上", "不明", "其他"]
+    "台灣": [
+        "基隆市", "台北市", "新北市", "桃園市", "新竹市", "新竹縣",
+        "苗栗縣", "台中市", "彰化縣", "南投縣", "雲林縣", "嘉義市",
+        "嘉義縣", "台南市", "高雄市", "屏東縣", "宜蘭縣", "花蓮縣",
+        "台東縣", "澎湖縣"
+    ],
+    "日本": ["九州", "沖繩"],
+    "澳洲": ["雪梨", "墨爾本"],
+    "加拿大": ["溫哥華"],
+    "韓國": ["首爾"]
 }
 
 # Default Values
+DEFAULT_TYPE_1 = "📅 Daily"
 DEFAULT_COUNTRY = "台灣"
-DEFAULT_LOCATION = "臺南"
-DEFAULT_ACCOUNT = "YT"
+DEFAULT_LOCATION = "台南市"
+DEFAULT_ACCOUNT = "菇菇"
 
 # UI Configuration
 PAGE_CONFIG = {
