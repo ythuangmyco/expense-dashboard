@@ -10,11 +10,11 @@ WORKSHEET_GID = 453361449  # Plain text sheet GID as per latest architecture
 SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={WORKSHEET_GID}"
 
 # Authentication
-FAMILY_PIN = "0727"  # Simple family PIN protection
+FAMILY_PIN = "A127dw@ekCbT"  # Family password protection
 ALLOWED_USERS = ["菇菇", "過兒"]  # Authorized family members
 
 # Note: Authentication is now ENABLED
-# Users must select their name (菇菇 or 過兒) + enter PIN "0727" to access the app
+# Users must select their name (菇菇 or 過兒) + enter family password to access the app
 # To disable authentication:
 # 1. Go to auth.py
 # 2. Change DISABLE_AUTH = False to DISABLE_AUTH = True

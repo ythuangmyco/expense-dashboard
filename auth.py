@@ -61,9 +61,8 @@ def password_screen():
         password = st.text_input(
             "密碼",
             type="password",
-            placeholder="請輸入4位數字密碼",
-            max_chars=4,
-            help="請輸入家庭共用的4位數字密碼"
+            placeholder="請輸入家庭密碼",
+            help="請輸入家庭共用密碼"
         )
 
         # Remember me checkbox
