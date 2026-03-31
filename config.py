@@ -26,6 +26,16 @@ COLUMN_MAPPING = {
     '地點': 'location',
     '備註': 'notes',
 
+    # Additional possible amount column names
+    'Amount': 'amount',
+    'amount': 'amount',
+    'AMOUNT': 'amount',
+    '費用': 'amount',
+    '金钱': 'amount',
+    'Cost': 'amount',
+    'Money': 'amount',
+    '支出': 'amount',
+
     # UTF-8 encoded versions (fallback for CSV encoding issues)
     'æ\x97¥æ\x9c\x9f': 'date',
     'é¡\x9eå\x9e\x8b_1': 'type_1',

@@ -516,7 +516,63 @@ class SheetsAPI:
                 empty_amounts = (df[amount_col].isna() | (df[amount_col] == '') | (df[amount_col] == '0')).sum()
                 logger.info(f"💰 Empty/zero amounts before conversion: {empty_amounts}")
 
-                df['amount'] = pd.to_numeric(df[amount_col], errors='coerce')
+                # Clean amount data before conversion - handle formatted numbers
+                logger.info(f"💰 Cleaning amount data format...")
+
+                def clean_amount(value):
+                    """Clean amount values to handle various formats"""
+                    if pd.isna(value) or value == '':
+                        return None
+
+                    # Convert to string first
+                    str_val = str(value).strip()
+
+                    # Remove common formatting
+                    str_val = str_val.replace(',', '')  # Remove commas: "1,234" → "1234"
+                    str_val = str_val.replace('NT$', '')  # Remove currency: "NT$1234" → "1234"
+                    str_val = str_val.replace('$', '')  # Remove dollar signs
+                    str_val = str_val.replace(' ', '')  # Remove spaces
+                    str_val = str_val.replace('台幣', '')  # Remove currency text
+                    str_val = str_val.replace('元', '')  # Remove currency unit
+
+                    # Handle negative values in parentheses: "(1234)" → "-1234"
+                    if str_val.startswith('(') and str_val.endswith(')'):
+                        str_val = '-' + str_val[1:-1]
+
+                    try:
+                        return float(str_val)
+                    except:
+                        return None
+
+                # Apply cleaning function
+                df['amount'] = df[amount_col].apply(clean_amount)
+
+                # Show cleaning results
+                cleaned_valid = df['amount'].notna().sum()
+                cleaned_total = df['amount'].sum()
+                logger.info(f"💰 After cleaning: {cleaned_valid} valid amounts, total: {cleaned_total:,.0f}")
+
+                # Show before/after samples to verify cleaning worked
+                if len(df) > 0:
+                    logger.info("💰 Cleaning examples:")
+                    for i in range(min(5, len(df))):
+                        if not pd.isna(df.iloc[i][amount_col]):
+                            original = df.iloc[i][amount_col]
+                            cleaned = df.iloc[i]['amount']
+                            logger.info(f"   '{original}' → {cleaned}")
+
+                # If total is now much higher, we found the issue
+                if cleaned_total > 2000000:
+                    logger.info(f"🎯 SUCCESS: Found correct total after cleaning: {cleaned_total:,.0f}")
+                    st.success(f"✅ 資料清理成功！正確總額: NT${cleaned_total:,.0f}")
+                elif cleaned_total < 1000000:
+                    logger.warning(f"⚠️ Total still low after cleaning: {cleaned_total:,.0f}")
+                    st.warning(f"⚠️ 清理後總額仍偏低: NT${cleaned_total:,.0f}")
+
+                    # Show more debugging info
+                    unique_formats = df[amount_col].dropna().astype(str).str.strip().value_counts().head(10)
+                    logger.info(f"💰 Most common amount formats in sheet: {unique_formats.to_dict()}")
+                    st.info("🔍 檢查金額格式 - 查看日誌了解詳細資訊")
 
                 # Show conversion results
                 valid_amounts = df['amount'].notna().sum()
