@@ -97,9 +97,21 @@ def show_api_status():
     status = api.get_status()
 
     if status["api_available"]:
-        st.success("🟢 連線正常 - 即時同步")
+        st.success("🟢 Google Sheets API 連線正常 - 可新增/編輯支出")
     else:
         st.warning("🟡 唯讀模式 - 使用 CSV 資料")
+
+        # Show detailed status information
+        with st.expander("🔍 連線狀態詳情"):
+            st.write(f"**Sheet ID**: {status['sheet_id']}")
+            st.write(f"**Worksheet GID**: {status['worksheet_gid']}")
+            st.write(f"**API 可用**: {status['api_available']}")
+            st.write(f"**工作表連接**: {status['worksheet_connected']}")
+
+            if not status["api_available"]:
+                st.info("💡 若要啟用新增/編輯功能，請設定 Google Sheets API")
+                st.code("需要在 Streamlit Cloud 的 Settings → Secrets 中添加 Google 服務帳戶憑證")
+
         if st.button("🔄 重新連接"):
             refresh_data()
             st.rerun()

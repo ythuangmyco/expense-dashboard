@@ -39,18 +39,18 @@ COLUMN_MAPPING = {
 }
 
 # Type_1 Options (Daily vs Travel)
-TYPE_1_OPTIONS = ["📅 Daily", "✈️ Travel"]
+TYPE_1_OPTIONS = ["📅 日常", "✈️ 旅遊"]
 
 # Quick Favorites for mobile-first entry (matching your form categories)
 QUICK_FAVORITES = {
-    "☕ 咖啡": {"type_1": "📅 Daily", "category_type": "dining", "amount": 150},
-    "🚗 停車": {"type_1": "📅 Daily", "category_type": "transportation", "amount": 100},
-    "⛽ 加油": {"type_1": "📅 Daily", "category_type": "transportation", "amount": 1200},
-    "🍜 午餐": {"type_1": "📅 Daily", "category_type": "dining", "amount": 200},
-    "🛒 生活用品": {"type_1": "📅 Daily", "category_type": "household", "amount": 300},
-    "🚌 公車": {"type_1": "📅 Daily", "category_type": "transportation", "amount": 30},
-    "🥤 飲料": {"type_1": "📅 Daily", "category_type": "dining", "amount": 80},
-    "🎬 娛樂": {"type_1": "📅 Daily", "category_type": "entertainment", "amount": 500}
+    "☕ 咖啡": {"type_1": "📅 日常", "category_type": "dining", "amount": 150},
+    "🚗 停車": {"type_1": "📅 日常", "category_type": "transportation", "amount": 100},
+    "⛽ 加油": {"type_1": "📅 日常", "category_type": "transportation", "amount": 1200},
+    "🍜 午餐": {"type_1": "📅 日常", "category_type": "dining", "amount": 200},
+    "🛒 生活用品": {"type_1": "📅 日常", "category_type": "household", "amount": 300},
+    "🚌 公車": {"type_1": "📅 日常", "category_type": "transportation", "amount": 30},
+    "🥤 飲料": {"type_1": "📅 日常", "category_type": "dining", "amount": 80},
+    "🎬 娛樂": {"type_1": "📅 日常", "category_type": "entertainment", "amount": 500}
 }
 
 # Category Options (Type_2 from your Google Form - 17 categories)

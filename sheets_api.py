@@ -252,8 +252,16 @@ class SheetsAPI:
         Add a new expense record to the sheet
         Returns True if successful, False otherwise
         """
-        if not self.api_available or not self.worksheet:
-            st.warning("⚠️ 無法新增資料，API 不可用")
+        logger.info(f"🔍 Attempting to add expense: {expense_data}")
+
+        if not self.api_available:
+            st.error("❌ Google Sheets API 未設定或不可用")
+            st.info("💡 請確認已在 Streamlit Cloud 設定 secrets，或本地設定 service account 金鑰")
+            return False
+
+        if not self.worksheet:
+            st.error("❌ 無法連接到工作表")
+            st.info("💡 請確認 Google Sheet 已與 service account 共用，且有編輯權限")
             return False
 
         try:
@@ -270,18 +278,33 @@ class SheetsAPI:
                 expense_data.get('notes', '')
             ]
 
+            logger.info(f"📝 Row data to append: {row_data}")
+
             # Append to worksheet
             self.worksheet.append_row(row_data)
-            logger.info(f"✅ Added expense: {expense_data.get('description', '')} - NT${expense_data.get('amount', 0)}")
+            logger.info(f"✅ Successfully added expense: {expense_data.get('description', '')} - NT${expense_data.get('amount', 0)}")
 
             # Clear Streamlit cache to reflect changes
             st.cache_data.clear()
 
+            # Show success message with details
+            st.success(f"✅ 成功新增支出: {expense_data.get('description', '')} - NT${expense_data.get('amount', 0):,.0f}")
+
             return True
 
         except Exception as e:
-            logger.error(f"❌ Failed to add expense: {str(e)}")
-            st.error(f"新增失敗: {str(e)}")
+            error_msg = str(e)
+            logger.error(f"❌ Failed to add expense: {error_msg}")
+
+            # Provide specific error guidance
+            if "403" in error_msg:
+                st.error("❌ 權限不足：請確認 Google Sheet 已與 service account 共用")
+                st.info("💡 Service account email: expense-dashboard@divine-engine-491814-c3.iam.gserviceaccount.com")
+            elif "404" in error_msg:
+                st.error("❌ 找不到工作表：請確認 Sheet ID 和 GID 正確")
+            else:
+                st.error(f"❌ 新增失敗: {error_msg}")
+
             return False
 
     def update_expense(self, row_index: int, expense_data: Dict) -> bool:

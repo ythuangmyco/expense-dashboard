@@ -139,7 +139,7 @@ def expense_input_form(df: pd.DataFrame) -> bool:
             help="選擇支出類型"
         )
 
-        # Type_2 selection (Specific category)
+        # Type_2 selection (Specific category) - Display in Chinese
         category_type = st.selectbox(
             "分類 🏷️",
             options=CATEGORIES,
