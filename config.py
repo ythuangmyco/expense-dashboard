@@ -3,7 +3,7 @@ Configuration settings for the Expense Dashboard
 """
 
 # Google Sheets Configuration
-SHEET_ID = "your-google-sheet-id-here"
+SHEET_ID = "16JzKmS8Jq9H6NmjrpKkqBqNfnXkC_gfPiMV6Y6qP_kQ"
 WORKSHEET_GID = 453361449  # Plain text sheet GID as per latest architecture
 
 # CSV Fallback URL (for when API is not available)
