@@ -236,7 +236,10 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
         return False
 
     # Sort by date (newest first) for easier editing
-    df_sorted = df.sort_values('date', ascending=False)
+    df_sorted = df.sort_values('date', ascending=False).reset_index(drop=False)
+
+    # CRITICAL: Store the original index to map back to the correct row
+    df_sorted['original_index'] = df_sorted['index']  # This preserves the original row position
 
     # Display recent expenses for selection
     st.caption("選擇要編輯的支出:")
@@ -264,8 +267,14 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
     )
 
     if event.selection and len(event.selection.rows) > 0:
-        selected_idx = event.selection.rows[0]
-        selected_row = df_sorted.iloc[selected_idx]
+        selected_display_idx = event.selection.rows[0]  # Index in the displayed table
+        selected_row = df_sorted.iloc[selected_display_idx]  # Get the full row data
+
+        # Get the ORIGINAL index for updating the correct row in Google Sheets
+        original_row_index = selected_row['original_index']
+
+        # Debug info
+        st.caption(f"🔍 Debug: 選擇顯示行 {selected_display_idx}, 原始資料行 {original_row_index}")
 
         st.divider()
         st.subheader("編輯所選支出")
@@ -351,8 +360,8 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
                         "notes": selected_row.get('notes', '')
                     }
 
-                    # Update in sheet
-                    success = api.update_expense(selected_idx, updated_data)
+                    # Update in sheet - use ORIGINAL row index, not display index
+                    success = api.update_expense(original_row_index, updated_data)
                     if success:
                         st.success("✅ 支出已更新")
                         return True
@@ -360,8 +369,8 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
                         st.error("❌ 更新失敗")
 
                 elif action == "刪除支出":
-                    # Direct deletion
-                    success = api.delete_expense(selected_idx)
+                    # Direct deletion - use ORIGINAL row index, not display index
+                    success = api.delete_expense(original_row_index)
                     if success:
                         st.success("✅ 支出已刪除")
                         return True

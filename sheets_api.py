@@ -237,14 +237,19 @@ class SheetsAPI:
         logger.info(f"🧹 Processing data from {source}...")
 
         # Show shape before cleaning
+        initial_rows = len(df)
         logger.info(f"📊 Before cleaning: {df.shape}")
+
+        # Save original for comparison
+        df_original = df.copy()
 
         # Remove completely empty rows and columns (but be less aggressive)
         df = df.dropna(how='all')
         # Only remove columns that are completely empty
         df = df.loc[:, df.notna().any()]
 
-        logger.info(f"📊 After removing empty rows/cols: {df.shape}")
+        empty_rows_removed = initial_rows - len(df)
+        logger.info(f"📊 After removing empty rows/cols: {df.shape} (removed {empty_rows_removed} completely empty rows)")
 
         # Debug: Show actual column names
         logger.info(f"📋 Actual columns in sheet: {list(df.columns)}")
@@ -265,7 +270,7 @@ class SheetsAPI:
         logger.info(f"🎯 Critical fields available: {available_critical}")
 
         if available_critical:
-            # More detailed analysis of why rows are being filtered
+            # MINIMAL filtering - only remove completely useless rows
             rows_before = len(df)
 
             if 'date' in df.columns and 'amount' in df.columns:
@@ -280,30 +285,35 @@ class SheetsAPI:
                 logger.info(f"   - Empty amounts: {empty_amounts}")
                 logger.info(f"   - Both empty: {both_empty}")
 
-                # Only remove rows where both date and amount are empty/missing
-                df = df[~(df['date'].isna() & df['amount'].isna())]
-                df = df[~((df['date'] == '') & (df['amount'] == ''))]
+                # VERY MINIMAL filtering - only remove rows where BOTH date and amount are completely empty
+                # AND where there's no other useful data (like description)
+                completely_useless = (
+                    (df['date'].isna() | (df['date'] == '')) &
+                    (df['amount'].isna() | (df['amount'] == '')) &
+                    (df.get('description', '').isna() | (df.get('description', '') == ''))
+                ).sum()
 
-                # Check for rows with empty dates but valid amounts
-                empty_date_valid_amount = ((df['date'].isna() | (df['date'] == '')) &
-                                         (df['amount'].notna() & (df['amount'] != ''))).sum()
-                if empty_date_valid_amount > 0:
-                    logger.info(f"⚠️ Found {empty_date_valid_amount} rows with valid amounts but missing dates - keeping them")
+                logger.info(f"📊 Completely useless rows (no date, amount, or description): {completely_useless}")
 
-                # Check for rows with valid dates but empty amounts
-                valid_date_empty_amount = ((df['date'].notna() & (df['date'] != '')) &
-                                         (df['amount'].isna() | (df['amount'] == ''))).sum()
-                if valid_date_empty_amount > 0:
-                    logger.info(f"⚠️ Found {valid_date_empty_amount} rows with valid dates but missing amounts - keeping them")
+                # Only remove truly empty rows
+                df = df[~(
+                    (df['date'].isna() | (df['date'] == '')) &
+                    (df['amount'].isna() | (df['amount'] == '')) &
+                    (df.get('description', '').isna() | (df.get('description', '') == ''))
+                )]
+
+                logger.info(f"📊 Keeping rows with ANY useful data (date, amount, or description)")
 
             elif 'date' in df.columns:
                 empty_dates = (df['date'].isna() | (df['date'] == '')).sum()
                 logger.info(f"📊 Empty dates: {empty_dates}")
-                df = df[df['date'].notna() & (df['date'] != '')]
+                # Keep all rows - even with empty dates, they might have other useful data
+                logger.info(f"📊 Keeping all rows even with empty dates - user can filter later")
             elif 'amount' in df.columns:
                 empty_amounts = (df['amount'].isna() | (df['amount'] == '')).sum()
                 logger.info(f"📊 Empty amounts: {empty_amounts}")
-                df = df[df['amount'].notna() & (df['amount'] != '')]
+                # Keep all rows - even with empty amounts, they might have other useful data
+                logger.info(f"📊 Keeping all rows even with empty amounts - user can filter later")
 
             rows_after = len(df)
             logger.info(f"📊 First filter: removed {rows_before - rows_after} rows with missing critical data ({rows_after} remaining)")
@@ -341,14 +351,29 @@ class SheetsAPI:
                 logger.info(f"💰 Converting amount column: {amount_col}")
 
                 # Show some sample values before conversion
-                logger.info(f"💰 Sample amount values: {df[amount_col].head().tolist()}")
+                sample_amounts = df[amount_col].head(10).tolist()
+                logger.info(f"💰 Sample amount values: {sample_amounts}")
+
+                # Check for empty/zero amounts before conversion
+                empty_amounts = (df[amount_col].isna() | (df[amount_col] == '') | (df[amount_col] == '0')).sum()
+                logger.info(f"💰 Empty/zero amounts before conversion: {empty_amounts}")
 
                 df['amount'] = pd.to_numeric(df[amount_col], errors='coerce')
 
                 # Show conversion results
                 valid_amounts = df['amount'].notna().sum()
+                zero_amounts = (df['amount'] == 0).sum()
+                invalid_amounts = df['amount'].isna().sum()
                 total_amount = df['amount'].sum()
-                logger.info(f"💰 After conversion: {valid_amounts} valid amounts, total: {total_amount:,.0f}")
+                logger.info(f"💰 After conversion:")
+                logger.info(f"   - Valid amounts: {valid_amounts}")
+                logger.info(f"   - Zero amounts: {zero_amounts}")
+                logger.info(f"   - Invalid amounts: {invalid_amounts}")
+                logger.info(f"   - Total: {total_amount:,.0f}")
+
+                # If we have many zero amounts, that might explain the filtering
+                if zero_amounts > 100:
+                    logger.info(f"💰 Warning: {zero_amounts} zero-amount records found - these might be placeholder rows")
 
             # Final validation - only remove rows where critical converted data is invalid
             if 'date' in df.columns and 'amount' in df.columns:
@@ -380,11 +405,19 @@ class SheetsAPI:
                 logger.info(f"   - Strict (both valid): {rows_strict} rows")
                 logger.info(f"   - Lenient (amount valid): {rows_lenient} rows")
 
-                # Use lenient filtering to preserve more data
-                df = df_lenient
+                # Use VERY lenient filtering - only remove rows that are completely useless
+                # Keep any row that has EITHER a valid date OR a valid amount
+                df_ultra_lenient = df[(df['date'].notna()) | (df['amount'].notna())]
+
+                rows_ultra = len(df_ultra_lenient)
+                logger.info(f"📊 Filtering options comparison:")
+                logger.info(f"   - Ultra lenient (date OR amount valid): {rows_ultra} rows")
+
+                # Use ultra-lenient filtering to preserve maximum data
+                df = df_ultra_lenient
                 rows_after = len(df)
 
-                logger.info(f"📊 Final filter: removed {rows_before - rows_after} rows with invalid amounts")
+                logger.info(f"📊 Final filter: removed {rows_before - rows_after} rows (completely empty only)")
 
                 if len(df) > 0:
                     final_total = df['amount'].sum()
