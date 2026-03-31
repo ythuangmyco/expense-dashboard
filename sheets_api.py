@@ -68,14 +68,85 @@ class SheetsAPI:
                     self.api_available = True
                     # Check worksheet has data
                     try:
-                        row_count = len(self.worksheet.get_all_values())
+                        all_values = self.worksheet.get_all_values()
+                        row_count = len(all_values)
                         logger.info(f"✅ Google Sheets API initialized successfully - {row_count} rows available")
+
+                        # Quick check of data structure in this worksheet
+                        if all_values and len(all_values) > 1:
+                            headers = all_values[0]
+                            sample_row = all_values[1] if len(all_values) > 1 else []
+                            logger.info(f"📋 Worksheet '{self.worksheet.title}' headers: {headers}")
+                            logger.info(f"📊 Sample row: {sample_row}")
+
+                            # Check if this worksheet has amount data that sums to ~2.5M
+                            amount_cols = [i for i, h in enumerate(headers) if any(keyword in str(h).lower()
+                                         for keyword in ['amount', '金額', 'money', '錢'])]
+
+                            for col_idx in amount_cols:
+                                col_name = headers[col_idx]
+                                values = [row[col_idx] if col_idx < len(row) else '' for row in all_values[1:]]
+                                numeric_values = []
+                                for val in values:
+                                    try:
+                                        if val and val != '':
+                                            numeric_values.append(float(val))
+                                    except:
+                                        pass
+
+                                if numeric_values:
+                                    total = sum(numeric_values)
+                                    logger.info(f"💰 Worksheet '{self.worksheet.title}' column '{col_name}' total: {total:,.0f}")
+                                    if total > 2000000:
+                                        st.success(f"🎯 在工作表 '{self.worksheet.title}' 發現大額總計: {total:,.0f}")
+
                     except Exception as e:
                         logger.warning(f"⚠️ Could not check row count: {e}")
                         logger.info("✅ Google Sheets API initialized successfully")
                 else:
                     logger.error(f"❌ Worksheet with GID {WORKSHEET_GID} not found")
                     logger.error(f"Available worksheets: {[(ws.title, ws.id) for ws in worksheets]}")
+
+                    # Check other worksheets to see if they have the expected data
+                    st.warning(f"⚠️ 找不到指定的工作表 GID {WORKSHEET_GID}")
+                    st.info("🔍 檢查其他可用的工作表...")
+
+                    for ws in worksheets:
+                        try:
+                            logger.info(f"🔍 Checking alternative worksheet: {ws.title} (GID: {ws.id})")
+                            ws_values = ws.get_all_values()
+                            if ws_values and len(ws_values) > 1:
+                                headers = ws_values[0]
+                                # Look for amount columns
+                                amount_cols = [i for i, h in enumerate(headers) if any(keyword in str(h).lower()
+                                             for keyword in ['amount', '金額', 'money', '錢'])]
+
+                                for col_idx in amount_cols:
+                                    col_name = headers[col_idx]
+                                    values = [row[col_idx] if col_idx < len(row) else '' for row in ws_values[1:]]
+                                    numeric_values = []
+                                    for val in values:
+                                        try:
+                                            if val and val != '':
+                                                numeric_values.append(float(val))
+                                        except:
+                                            pass
+
+                                    if numeric_values:
+                                        total = sum(numeric_values)
+                                        logger.info(f"💰 Alternative worksheet '{ws.title}' column '{col_name}' total: {total:,.0f}")
+                                        if total > 2000000:
+                                            st.error(f"🎯 發現正確資料在工作表 '{ws.title}' (GID: {ws.id})!")
+                                            st.info(f"總額: NT${total:,.0f} - 請更新設定使用 GID {ws.id}")
+
+                        except Exception as e:
+                            logger.info(f"Could not check worksheet {ws.title}: {e}")
+
+                    # For now, use the first worksheet as fallback
+                    if worksheets:
+                        self.worksheet = worksheets[0]
+                        logger.info(f"🔄 Using fallback worksheet: {self.worksheet.title} (GID: {self.worksheet.id})")
+                        self.api_available = True
 
             else:
                 logger.info("ℹ️ No Google Sheets credentials found, using CSV fallback")
@@ -254,14 +325,67 @@ class SheetsAPI:
         # Debug: Show actual column names
         logger.info(f"📋 Actual columns in sheet: {list(df.columns)}")
         if not df.empty:
-            logger.info(f"📊 Sample data: {df.head(1).to_dict('records')}")
+            logger.info(f"📊 Sample data (first row): {df.head(1).to_dict('records')}")
+            # Show more samples to understand the data structure
+            logger.info(f"📊 Sample data (rows 1-5): {df.head(5)[list(df.columns)[:5]].to_dict('records')}")
+
+        # Check for amount-related columns specifically
+        amount_related_cols = [col for col in df.columns if any(keyword in str(col).lower()
+                              for keyword in ['amount', '金額', 'money', '錢', 'cost', '費用', 'expense'])]
+        logger.info(f"💰 Found amount-related columns: {amount_related_cols}")
+
+        # Show sample values from each amount column
+        for col in amount_related_cols:
+            sample_values = df[col].dropna().head(10).tolist()
+            logger.info(f"💰 Sample values from '{col}': {sample_values}")
+
+            # Try to sum this column to see totals
+            try:
+                numeric_values = pd.to_numeric(df[col], errors='coerce')
+                col_total = numeric_values.sum()
+                valid_count = numeric_values.notna().sum()
+                logger.info(f"💰 Column '{col}' total: {col_total:,.0f} ({valid_count} valid values)")
+
+                # If this column has the expected total (~2.5M), flag it
+                if col_total > 2000000:
+                    logger.info(f"🎯 FOUND LIKELY CORRECT AMOUNT COLUMN: '{col}' with total {col_total:,.0f}")
+                    st.info(f"🎯 發現可能的正確金額欄位: '{col}' 總額: NT${col_total:,.0f}")
+
+            except Exception as e:
+                logger.info(f"💰 Could not calculate total for '{col}': {e}")
 
         # Apply column mapping (Chinese to English) - only for columns that exist
         existing_mapping = {k: v for k, v in COLUMN_MAPPING.items() if k in df.columns}
+
+        logger.info(f"🔄 Column mapping analysis:")
+        logger.info(f"   - Available in sheet: {list(df.columns)}")
+        logger.info(f"   - Mapping to apply: {existing_mapping}")
+
+        # Before mapping, check if we have the expected amount column
+        if '金額' in df.columns:
+            sample_amounts = df['金額'].dropna().head(10).tolist()
+            logger.info(f"💰 Sample '金額' values BEFORE mapping: {sample_amounts}")
+
         df = df.rename(columns=existing_mapping)
 
         logger.info(f"✅ Mapped columns: {existing_mapping}")
-        logger.info(f"🔄 Final columns: {list(df.columns)}")
+        logger.info(f"🔄 Final columns after mapping: {list(df.columns)}")
+
+        # After mapping, check the 'amount' column
+        if 'amount' in df.columns:
+            sample_amounts = df['amount'].dropna().head(10).tolist()
+            logger.info(f"💰 Sample 'amount' values AFTER mapping: {sample_amounts}")
+
+        # Also check if there are any unmapped amount columns
+        remaining_amount_cols = [col for col in df.columns if any(keyword in str(col).lower()
+                                for keyword in ['amount', '金額', 'money', '錢', 'cost', '費用']) and col != 'amount']
+        if remaining_amount_cols:
+            logger.warning(f"⚠️ Found unmapped amount-related columns: {remaining_amount_cols}")
+            st.warning(f"⚠️ 發現未對應的金額相關欄位: {remaining_amount_cols}")
+
+            for col in remaining_amount_cols:
+                sample_vals = df[col].dropna().head(5).tolist()
+                logger.info(f"💰 Unmapped column '{col}' samples: {sample_vals}")
 
         # Check for critical fields but don't be too aggressive about removing data
         critical_fields = ['date', 'amount']
@@ -344,11 +468,45 @@ class SheetsAPI:
                 invalid_dates = df['date'].isna().sum()
                 logger.info(f"📅 Date conversion: {valid_dates} valid, {invalid_dates} failed")
 
-            # Convert amount column if it exists
+            # Convert amount column if it exists - but be smarter about which one to use
             amount_cols = [col for col in df.columns if 'amount' in col.lower() or '金額' in col]
+
+            # If we have multiple amount columns, try to find the one with the highest total
+            best_amount_col = None
+            best_total = 0
+
             if amount_cols:
-                amount_col = amount_cols[0]
-                logger.info(f"💰 Converting amount column: {amount_col}")
+                logger.info(f"💰 Found amount columns: {amount_cols}")
+
+                for col in amount_cols:
+                    try:
+                        test_numeric = pd.to_numeric(df[col], errors='coerce')
+                        test_total = test_numeric.sum()
+                        valid_count = test_numeric.notna().sum()
+                        logger.info(f"💰 Column '{col}': total={test_total:,.0f}, valid={valid_count}")
+
+                        if test_total > best_total:
+                            best_total = test_total
+                            best_amount_col = col
+
+                    except Exception as e:
+                        logger.info(f"💰 Could not test column '{col}': {e}")
+
+                amount_col = best_amount_col if best_amount_col else amount_cols[0]
+                logger.info(f"💰 Selected best amount column: {amount_col} (total: {best_total:,.0f})")
+
+                # If the best total is still way off from expected ~2.5M, warn user
+                if best_total < 1000000:
+                    logger.warning(f"💰 Amount total {best_total:,.0f} is much lower than expected ~2.5M")
+                    st.warning(f"⚠️ 計算的總金額 NT${best_total:,.0f} 遠低於預期的 250萬+")
+                    st.info("💡 可能需要檢查工作表或欄位設定")
+                elif best_total > 2000000:
+                    st.success(f"✅ 找到正確的金額總計: NT${best_total:,.0f}")
+
+            else:
+                logger.error("❌ No amount column found!")
+                st.error("❌ 找不到金額欄位!")
+                return df
 
                 # Show some sample values before conversion
                 sample_amounts = df[amount_col].head(10).tolist()
@@ -374,6 +532,26 @@ class SheetsAPI:
                 # If we have many zero amounts, that might explain the filtering
                 if zero_amounts > 100:
                     logger.info(f"💰 Warning: {zero_amounts} zero-amount records found - these might be placeholder rows")
+
+                # If total is still very low, check if we missed any amount columns
+                if total_amount < 1000000:
+                    logger.warning(f"💰 CRITICAL: Total amount {total_amount:,.0f} is too low!")
+
+                    # Check ALL columns for numeric data that might be amounts
+                    logger.info("🔍 Checking all columns for potential amount data...")
+                    for col in df.columns:
+                        try:
+                            numeric_test = pd.to_numeric(df[col], errors='coerce')
+                            col_total = numeric_test.sum()
+                            valid_count = numeric_test.notna().sum()
+
+                            if col_total > 1000000:  # If this column has a large total
+                                logger.warning(f"🎯 POTENTIAL AMOUNT COLUMN: '{col}' total={col_total:,.0f}")
+                                st.error(f"🎯 發現可能的金額欄位: '{col}' 總額: NT${col_total:,.0f}")
+                                st.info(f"💡 可能需要更新欄位對應設定")
+
+                        except:
+                            pass
 
             # Final validation - only remove rows where critical converted data is invalid
             if 'date' in df.columns and 'amount' in df.columns:
