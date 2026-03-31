@@ -618,7 +618,7 @@ class SheetsAPI:
                         str_val = str_val.replace('台幣', '')  # Remove currency text
                         str_val = str_val.replace('元', '')  # Remove currency unit
                         str_val = str_val.replace('′', '')  # Remove prime character: "240.00′" → "240.00"
-                        str_val = str_val.replace(''', '')  # Remove smart quote
+                        str_val = str_val.replace("'", '')  # Remove smart quote
                         str_val = str_val.replace('"', '')  # Remove regular quote
 
                         # Handle negative values in parentheses: "(1234)" → "-1234"
