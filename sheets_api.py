@@ -158,24 +158,38 @@ class SheetsAPI:
     def load_data(self) -> Optional[pd.DataFrame]:
         """
         Load expense data with progressive fallback
-        1. Try Google Sheets API (PREFERRED - has all data)
-        2. Fall back to CSV export (may have authentication issues)
+        1. Try CSV export first (cleaner data format)
+        2. Fall back to Google Sheets API if needed
         3. Return empty DataFrame if all fails
         """
-        # Try API first - this is our primary method
+
+        # Try CSV first - it has cleaner data format
+        logger.info("🚀 Attempting to load data via CSV export first...")
+        try:
+            df_csv = self._load_from_csv()
+            if not df_csv.empty:
+                logger.info(f"✅ CSV loaded {len(df_csv)} records successfully")
+                st.info("📄 使用 CSV 模式載入資料 (較乾淨的格式)")
+                return df_csv
+            else:
+                logger.warning("⚠️ CSV returned empty DataFrame")
+        except Exception as e:
+            logger.warning(f"⚠️ CSV failed: {str(e)}")
+
+        # Fallback to API method
         if self.api_available and self.worksheet:
             try:
-                logger.info("🚀 Attempting to load data via Google Sheets API...")
+                logger.info("🚀 Falling back to Google Sheets API...")
                 df = self._load_from_api()
                 if not df.empty:
                     logger.info(f"✅ API loaded {len(df)} records successfully")
+                    st.info("🔗 使用 Google Sheets API 載入資料")
                     return df
                 else:
                     logger.warning("⚠️ API returned empty DataFrame")
             except Exception as e:
                 logger.error(f"❌ API failed: {str(e)}")
                 st.error(f"Google Sheets API 錯誤: {str(e)}")
-                # Don't fall back to CSV if API fails - CSV is likely to have auth issues too
 
         # Show API status
         if not self.api_available:
@@ -271,7 +285,15 @@ class SheetsAPI:
                 content_type = response.headers.get('content-type', '')
                 if 'text/html' in content_type:
                     logger.warning("📄 CSV export returned HTML (likely authentication required)")
-                    st.warning("⚠️ CSV 匯出需要驗證，僅使用 API 模式")
+                    st.warning("⚠️ CSV 匯出需要驗證，改用 API 模式")
+                    return pd.DataFrame()
+
+                # Check if response contains actual CSV data
+                preview = response.text[:200]
+                if '日期,類型_1,類型_2,金額' not in preview:
+                    logger.warning("📄 CSV response does not contain expected headers")
+                    logger.info(f"📄 Response preview: {preview}")
+                    st.warning("⚠️ CSV 格式不符，改用 API 模式")
                     return pd.DataFrame()
 
             response.raise_for_status()
@@ -294,9 +316,9 @@ class SheetsAPI:
             st.warning("⚠️ CSV 資料載入失敗，請確認 Google Sheets API 設定正確")
             return pd.DataFrame()
 
-        # Read into DataFrame
+        # Read into DataFrame with proper handling of quoted numbers
         from io import StringIO
-        df = pd.read_csv(StringIO(csv_text))
+        df = pd.read_csv(StringIO(csv_text), quotechar='"', skipinitialspace=True)
 
         # Try to fix column encoding if needed
         if df.columns.size > 0 and any('\\x' in str(col) for col in df.columns):
@@ -571,7 +593,7 @@ class SheetsAPI:
                 logger.info(f"💰 Cleaning amount data format...")
 
                 def clean_amount(value):
-                    """Clean amount values to handle various formats including multiple values per cell"""
+                    """Clean amount values - simplified for CSV data"""
                     try:
                         if pd.isna(value) or value == '' or value is None:
                             return None
@@ -585,53 +607,20 @@ class SheetsAPI:
                         except:
                             pass
 
-                        # Handle multiple values in one cell (take the largest one)
-                        # Split on comma and prime characters: "240.00′,′26,495.00" → ["240.00", "26495.00"]
-                        if ',' in str_val:
-                            parts = str_val.split(',')
-                            amounts = []
-                            for part in parts:
-                                cleaned_part = clean_single_amount(part.strip())
-                                if cleaned_part is not None:
-                                    amounts.append(cleaned_part)
-
-                            # Return the largest amount if multiple found
-                            if amounts:
-                                return max(amounts)
-                            else:
-                                return None
-                        else:
-                            return clean_single_amount(str_val)
-
-                    except Exception as e:
-                        logger.warning(f"Could not clean amount value '{value}': {e}")
-                        return None
-
-                def clean_single_amount(str_val):
-                    """Clean a single amount value"""
-                    try:
-                        # Remove all formatting characters
-                        str_val = str_val.replace(',', '')  # Remove commas: "1,234" → "1234"
-                        str_val = str_val.replace('NT$', '')  # Remove currency: "NT$1234" → "1234"
+                        # Simple cleaning for CSV data (remove quotes and commas)
+                        str_val = str_val.replace('"', '')  # Remove quotes from CSV
+                        str_val = str_val.replace(',', '')  # Remove thousands separators
                         str_val = str_val.replace('$', '')  # Remove dollar signs
-                        str_val = str_val.replace(' ', '')  # Remove spaces
-                        str_val = str_val.replace('台幣', '')  # Remove currency text
-                        str_val = str_val.replace('元', '')  # Remove currency unit
-                        str_val = str_val.replace('′', '')  # Remove prime character: "240.00′" → "240.00"
-                        str_val = str_val.replace("'", '')  # Remove smart quote
-                        str_val = str_val.replace('"', '')  # Remove regular quote
+                        str_val = str_val.strip()
 
-                        # Handle negative values in parentheses: "(1234)" → "-1234"
-                        if str_val.startswith('(') and str_val.endswith(')'):
-                            str_val = '-' + str_val[1:-1]
-
-                        # Final conversion attempt
+                        # Convert to float
                         if str_val and str_val not in ['', '0', '0.0', '0.00']:
                             return float(str_val)
                         else:
                             return None
 
-                    except:
+                    except Exception as e:
+                        logger.warning(f"Could not clean amount value '{value}': {e}")
                         return None
 
                 # Apply cleaning function
