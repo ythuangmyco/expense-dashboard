@@ -7,120 +7,103 @@ import streamlit as st
 from datetime import datetime, timedelta
 import base64
 import json
+import hashlib
 from config import FAMILY_PIN, ALLOWED_USERS
 
 
-def set_auth_cookie(user: str, remember_days: int = 30):
+import os
+
+
+def get_auth_file_path():
     """
-    Set authentication cookie for remember me functionality
+    Get the path for the auth file
+    """
+    return os.path.join(os.path.expanduser("~"), ".streamlit_expense_auth.json")
+
+
+def save_remember_me_auth(user: str, remember_days: int = 30):
+    """
+    Save authentication data to file for persistent remember me
     """
     try:
         expiry_date = datetime.now() + timedelta(days=remember_days)
         auth_data = {
             "user": user,
             "expiry": expiry_date.isoformat(),
-            "token": f"{user}_{FAMILY_PIN}_{expiry_date.strftime('%Y%m%d')}"
+            "created": datetime.now().isoformat()
         }
 
-        # Encode the auth data
-        encoded_data = base64.b64encode(json.dumps(auth_data).encode()).decode()
-
-        # Set cookie using Streamlit's HTML capability
-        st.components.v1.html(f"""
-        <script>
-        document.cookie = "expense_auth={encoded_data}; path=/; max-age={remember_days * 24 * 60 * 60}; SameSite=Strict";
-        </script>
-        """, height=0)
+        auth_file = get_auth_file_path()
+        with open(auth_file, 'w') as f:
+            json.dump(auth_data, f)
 
         return True
+
     except Exception as e:
-        st.error(f"設定記住我功能失敗: {str(e)}")
+        st.warning(f"記住我功能保存失敗: {str(e)}")
         return False
 
 
-def get_auth_cookie():
+def load_remember_me_auth():
     """
-    Get authentication data from cookie
+    Load authentication data from file
     """
     try:
-        # Get cookie using JavaScript
-        cookie_script = """
-        <script>
-        function getCookie(name) {
-            let cookieValue = null;
-            if (document.cookie && document.cookie !== '') {
-                const cookies = document.cookie.split(';');
-                for (let i = 0; i < cookies.length; i++) {
-                    const cookie = cookies[i].trim();
-                    if (cookie.substring(0, name.length + 1) === (name + '=')) {
-                        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
-                        break;
-                    }
-                }
-            }
-            return cookieValue;
-        }
+        auth_file = get_auth_file_path()
 
-        const authCookie = getCookie('expense_auth');
-        if (authCookie) {
-            window.parent.postMessage({type: 'AUTH_COOKIE', data: authCookie}, '*');
-        }
-        </script>
-        """
+        if not os.path.exists(auth_file):
+            return None
 
-        # For now, let's use a simpler approach with session state backup
-        return st.session_state.get("auth_cookie_data", None)
+        with open(auth_file, 'r') as f:
+            auth_data = json.load(f)
+
+        # Check if expired
+        expiry_date = datetime.fromisoformat(auth_data["expiry"])
+        if datetime.now() > expiry_date:
+            # Expired, remove the file
+            os.remove(auth_file)
+            return None
+
+        # Check if user is still allowed
+        user = auth_data["user"]
+        if user not in ALLOWED_USERS:
+            os.remove(auth_file)
+            return None
+
+        return auth_data
 
     except Exception as e:
+        # If there's any error reading the file, remove it
+        try:
+            auth_file = get_auth_file_path()
+            if os.path.exists(auth_file):
+                os.remove(auth_file)
+        except:
+            pass
         return None
 
 
-def clear_auth_cookie():
+def clear_remember_me_auth():
     """
-    Clear authentication cookie
+    Clear the remember me authentication file
     """
     try:
-        st.components.v1.html("""
-        <script>
-        document.cookie = "expense_auth=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
-        </script>
-        """, height=0)
-
-        # Also clear from session state
-        if "auth_cookie_data" in st.session_state:
-            del st.session_state["auth_cookie_data"]
-
+        auth_file = get_auth_file_path()
+        if os.path.exists(auth_file):
+            os.remove(auth_file)
         return True
-    except:
+    except Exception as e:
         return False
 
 
-def check_cookie_auth():
+def check_persistent_auth():
     """
-    Check if user is authenticated via remember me cookie
+    Check if user is authenticated via remember me file
     """
     try:
-        # For simplicity, let's use session storage for now
-        # In a production app, you'd want proper cookie handling
-
-        remember_data = st.session_state.get("remember_me_data")
-        if not remember_data:
-            return None
-
-        # Check if remember me period has expired
-        expiry_str = remember_data.get("expiry")
-        if expiry_str:
-            expiry_date = datetime.fromisoformat(expiry_str)
-            if datetime.now() > expiry_date:
-                # Expired, clear the data
-                del st.session_state["remember_me_data"]
-                return None
-
-        # Validate the user is still in allowed users
-        user = remember_data.get("user")
-        if user in ALLOWED_USERS:
-            return user
-
+        auth_data = load_remember_me_auth()
+        if auth_data:
+            return auth_data["user"]
         return None
 
     except Exception as e:
@@ -129,7 +112,7 @@ def check_cookie_auth():
 
 def check_password():
     """
-    Enhanced authentication with persistent remember me functionality
+    Enhanced authentication with persistent file-based remember me functionality
     Returns True if authenticated, False otherwise
 
     Note: Authentication disabled for easier family access
@@ -145,12 +128,13 @@ def check_password():
     if st.session_state.get("password_correct", False):
         return True
 
-    # Check for remember me authentication
-    remembered_user = check_cookie_auth()
+    # Check for persistent remember me authentication
+    remembered_user = check_persistent_auth()
     if remembered_user:
-        # Auto-authenticate from remember me
+        # Auto-authenticate from remember me file
         st.session_state["password_correct"] = True
         st.session_state["current_user"] = remembered_user
+        st.info(f"🔓 自動登入: 歡迎回來 {remembered_user}!")
         return True
 
     return False
@@ -205,21 +189,16 @@ def password_screen():
 
                 # Set remember me functionality
                 if remember_me:
-                    expiry_date = datetime.now() + timedelta(days=30)
-                    remember_data = {
-                        "user": selected_user,
-                        "expiry": expiry_date.isoformat()
-                    }
-                    st.session_state["remember_me_data"] = remember_data
-
-                    # Try to set cookie for browser persistence
-                    set_auth_cookie(selected_user, 30)
+                    success = save_remember_me_auth(selected_user, 30)
+                    if success:
+                        st.success(f"✅ 登入成功！已設定記住我功能 (30天)")
+                    else:
+                        st.success(f"✅ 登入成功！但記住我功能設定失敗")
                 else:
                     # Clear any existing remember me data
-                    if "remember_me_data" in st.session_state:
-                        del st.session_state["remember_me_data"]
+                    clear_remember_me_auth()
+                    st.success(f"✅ 登入成功！歡迎 {selected_user}")
 
-                st.success(f"✅ 登入成功！歡迎 {selected_user}")
                 st.rerun()
             else:
                 st.error("❌ 密碼錯誤，請重試")
@@ -233,12 +212,8 @@ def logout():
     st.session_state["password_correct"] = False
     st.session_state["current_user"] = None
 
-    # Clear remember me data
-    if "remember_me_data" in st.session_state:
-        del st.session_state["remember_me_data"]
-
-    # Clear cookie
-    clear_auth_cookie()
+    # Clear persistent remember me data
+    clear_remember_me_auth()
 
     st.rerun()
 
@@ -268,13 +243,14 @@ def auth_sidebar():
 
     if check_password():
         current_user = st.session_state.get("current_user", "用戶")
-        remember_data = st.session_state.get("remember_me_data")
 
         with st.sidebar:
             st.success(f"🔓 已登入: {current_user}")
 
-            if remember_data:
-                expiry_str = remember_data.get("expiry")
+            # Check for persistent remember me data
+            auth_data = load_remember_me_auth()
+            if auth_data:
+                expiry_str = auth_data.get("expiry")
                 if expiry_str:
                     expiry_date = datetime.fromisoformat(expiry_str)
                     days_left = (expiry_date - datetime.now()).days
@@ -308,5 +284,3 @@ def init_session_state():
         st.session_state["password_correct"] = False
     if "current_user" not in st.session_state:
         st.session_state["current_user"] = None
-    if "remember_me_data" not in st.session_state:
-        st.session_state["remember_me_data"] = None
