@@ -143,6 +143,37 @@ def get_comparison_period(start_date, end_date, df):
     return comp_start, comp_end, pd.DataFrame()
 
 
+def show_data_quality_info(df: pd.DataFrame):
+    """Show information about data quality and what was filtered"""
+    if df.empty:
+        return
+
+    with st.expander("📊 資料品質資訊", expanded=False):
+        st.caption("了解資料載入和篩選過程")
+
+        # Basic stats
+        st.write(f"**有效記錄數量**: {len(df)}")
+
+        if 'amount' in df.columns:
+            valid_amounts = df['amount'].notna().sum()
+            zero_amounts = (df['amount'] == 0).sum() if 'amount' in df.columns else 0
+            st.write(f"**有效金額記錄**: {valid_amounts}")
+            st.write(f"**零金額記錄**: {zero_amounts}")
+
+        if 'date' in df.columns:
+            valid_dates = df['date'].notna().sum()
+            st.write(f"**有效日期記錄**: {valid_dates}")
+
+            # Show date range
+            if valid_dates > 0:
+                min_date = df['date'].min().strftime('%Y-%m-%d')
+                max_date = df['date'].max().strftime('%Y-%m-%d')
+                st.write(f"**日期範圍**: {min_date} 至 {max_date}")
+
+        # Show recent filtered data info
+        st.caption("💡 被篩選的記錄通常是空白行、無效日期或無效金額的資料")
+
+
 def show_summary_metrics(df: pd.DataFrame, start_date=None, end_date=None, original_df=None):
     """Display key metrics for the specified period with comparison"""
     if df.empty:
@@ -631,6 +662,9 @@ def main_dashboard():
 
     # Show summary metrics for filtered period with comparison
     show_summary_metrics(filtered_df, start_date, end_date, df)
+
+    # Show data quality information
+    show_data_quality_info(df)
 
     # Show comparison period info if available
     if len(filtered_df) != len(df) and start_date and end_date:

@@ -265,23 +265,48 @@ class SheetsAPI:
         logger.info(f"🎯 Critical fields available: {available_critical}")
 
         if available_critical:
-            # Only remove rows where BOTH date AND amount are missing/empty
-            # Be more lenient - allow rows with some missing data
+            # More detailed analysis of why rows are being filtered
             rows_before = len(df)
+
             if 'date' in df.columns and 'amount' in df.columns:
-                # Only remove rows where both date and amount are empty
+                # Analyze what types of data we have
+                empty_dates = (df['date'].isna() | (df['date'] == '')).sum()
+                empty_amounts = (df['amount'].isna() | (df['amount'] == '')).sum()
+                both_empty = ((df['date'].isna() | (df['date'] == '')) &
+                             (df['amount'].isna() | (df['amount'] == ''))).sum()
+
+                logger.info(f"📊 Data analysis before filtering:")
+                logger.info(f"   - Empty dates: {empty_dates}")
+                logger.info(f"   - Empty amounts: {empty_amounts}")
+                logger.info(f"   - Both empty: {both_empty}")
+
+                # Only remove rows where both date and amount are empty/missing
                 df = df[~(df['date'].isna() & df['amount'].isna())]
-                # Also remove rows where both are empty strings
                 df = df[~((df['date'] == '') & (df['amount'] == ''))]
+
+                # Check for rows with empty dates but valid amounts
+                empty_date_valid_amount = ((df['date'].isna() | (df['date'] == '')) &
+                                         (df['amount'].notna() & (df['amount'] != ''))).sum()
+                if empty_date_valid_amount > 0:
+                    logger.info(f"⚠️ Found {empty_date_valid_amount} rows with valid amounts but missing dates - keeping them")
+
+                # Check for rows with valid dates but empty amounts
+                valid_date_empty_amount = ((df['date'].notna() & (df['date'] != '')) &
+                                         (df['amount'].isna() | (df['amount'] == ''))).sum()
+                if valid_date_empty_amount > 0:
+                    logger.info(f"⚠️ Found {valid_date_empty_amount} rows with valid dates but missing amounts - keeping them")
+
             elif 'date' in df.columns:
-                # Only remove rows with empty dates
+                empty_dates = (df['date'].isna() | (df['date'] == '')).sum()
+                logger.info(f"📊 Empty dates: {empty_dates}")
                 df = df[df['date'].notna() & (df['date'] != '')]
             elif 'amount' in df.columns:
-                # Only remove rows with empty amounts
+                empty_amounts = (df['amount'].isna() | (df['amount'] == '')).sum()
+                logger.info(f"📊 Empty amounts: {empty_amounts}")
                 df = df[df['amount'].notna() & (df['amount'] != '')]
 
             rows_after = len(df)
-            logger.info(f"📊 Removed {rows_before - rows_after} rows with missing critical data")
+            logger.info(f"📊 First filter: removed {rows_before - rows_after} rows with missing critical data ({rows_after} remaining)")
         else:
             logger.warning(f"⚠️ No critical fields found! Available columns: {list(df.columns)}")
             st.warning(f"找不到必要欄位 (date/amount)。實際欄位: {list(df.columns)}")
@@ -297,7 +322,17 @@ class SheetsAPI:
             if date_cols:
                 date_col = date_cols[0]
                 logger.info(f"📅 Converting date column: {date_col}")
+
+                # Show sample date formats before conversion
+                sample_dates = df[date_col].dropna().head(10).tolist()
+                logger.info(f"📅 Sample date formats: {sample_dates}")
+
                 df['date'] = pd.to_datetime(df[date_col], errors='coerce')
+
+                # Check conversion success
+                valid_dates = df['date'].notna().sum()
+                invalid_dates = df['date'].isna().sum()
+                logger.info(f"📅 Date conversion: {valid_dates} valid, {invalid_dates} failed")
 
             # Convert amount column if it exists
             amount_cols = [col for col in df.columns if 'amount' in col.lower() or '金額' in col]
@@ -315,18 +350,76 @@ class SheetsAPI:
                 total_amount = df['amount'].sum()
                 logger.info(f"💰 After conversion: {valid_amounts} valid amounts, total: {total_amount:,.0f}")
 
-            # Only remove rows with invalid data if both date and amount exist, but be more lenient
+            # Final validation - only remove rows where critical converted data is invalid
             if 'date' in df.columns and 'amount' in df.columns:
                 rows_before = len(df)
-                # Only drop rows where BOTH date and amount are invalid
-                df = df.dropna(subset=['date', 'amount'])
+
+                # Analyze what will be dropped
+                invalid_dates = df['date'].isna().sum()
+                invalid_amounts = df['amount'].isna().sum()
+                both_invalid = (df['date'].isna() & df['amount'].isna()).sum()
+                either_invalid = (df['date'].isna() | df['amount'].isna()).sum()
+
+                logger.info(f"📊 Final validation analysis:")
+                logger.info(f"   - Invalid dates after conversion: {invalid_dates}")
+                logger.info(f"   - Invalid amounts after conversion: {invalid_amounts}")
+                logger.info(f"   - Both invalid: {both_invalid}")
+                logger.info(f"   - Either invalid: {either_invalid}")
+
+                # Be more selective about what we drop
+                # Option 1: Only drop if BOTH are invalid
+                df_strict = df.dropna(subset=['date', 'amount'])
+
+                # Option 2: Keep rows with valid amounts even if dates are invalid
+                df_lenient = df[df['amount'].notna()]
+
+                rows_strict = len(df_strict)
+                rows_lenient = len(df_lenient)
+
+                logger.info(f"📊 Filtering options:")
+                logger.info(f"   - Strict (both valid): {rows_strict} rows")
+                logger.info(f"   - Lenient (amount valid): {rows_lenient} rows")
+
+                # Use lenient filtering to preserve more data
+                df = df_lenient
                 rows_after = len(df)
-                logger.info(f"📊 Removed {rows_before - rows_after} rows with invalid date/amount")
+
+                logger.info(f"📊 Final filter: removed {rows_before - rows_after} rows with invalid amounts")
 
                 if len(df) > 0:
                     final_total = df['amount'].sum()
                     logger.info(f"💰 Final total after all processing: {final_total:,.0f}")
                     st.success(f"✅ 處理完成: {len(df)} 筆有效記錄, 總額: NT${final_total:,.0f}")
+
+                    # Show summary of what was filtered out
+                    if rows_before > rows_after:
+                        filtered_count = rows_before - rows_after
+                        st.info(f"📊 最終篩選: 移除 {filtered_count} 筆無效金額記錄")
+
+                    # Show overall filtering summary
+                    if source == "api":
+                        original_rows = 1577  # From the debug message
+                        total_filtered = original_rows - len(df)
+                        if total_filtered > 0:
+                            st.info(f"📊 總篩選摘要: 原始 {original_rows} 筆 → 有效 {len(df)} 筆 (移除 {total_filtered} 筆空白/無效記錄)")
+                            logger.info(f"📊 Data pipeline summary: {original_rows} → {len(df)} rows (filtered {total_filtered})")
+            elif 'amount' in df.columns:
+                # If only amount exists, just filter by amount
+                rows_before = len(df)
+                df = df[df['amount'].notna()]
+                rows_after = len(df)
+
+                if len(df) > 0:
+                    final_total = df['amount'].sum()
+                    logger.info(f"💰 Final total after all processing: {final_total:,.0f}")
+                    st.success(f"✅ 處理完成: {len(df)} 筆有效記錄, 總額: NT${final_total:,.0f}")
+
+                    total_filtered = rows_before - rows_after
+                    if total_filtered > 0:
+                        st.info(f"📊 篩選摘要: 共 {total_filtered} 筆記錄被過濾 (無效金額)")
+            else:
+                if len(df) > 0:
+                    st.success(f"✅ 處理完成: {len(df)} 筆記錄")
 
             # Add derived fields for analysis (only if date column exists)
             if 'date' in df.columns:
