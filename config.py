@@ -13,16 +13,29 @@ SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=cs
 FAMILY_PIN = "0727"  # Simple family PIN protection
 
 # Column Mapping (matching your Google Form structure)
+# Handle both proper Chinese and UTF-8 encoded versions
 COLUMN_MAPPING = {
+    # Proper Chinese characters
     '日期': 'date',
-    'Type_1': 'type_1',          # Daily vs Travel
-    'Type_2': 'category_type',   # Specific category (dining, transportation, etc.)
+    '類型_1': 'type_1',          # Daily vs Travel
+    '類型_2': 'category_type',   # Specific category (dining, transportation, etc.)
     '金額': 'amount',
     '帳戶': 'account',           # 菇菇 or 過兒
     '名稱': 'description',
     '國家': 'country',
     '地點': 'location',
-    '備註': 'notes'
+    '備註': 'notes',
+
+    # UTF-8 encoded versions (fallback for CSV encoding issues)
+    'æ\x97¥æ\x9c\x9f': 'date',
+    'é¡\x9eå\x9e\x8b_1': 'type_1',
+    'é¡\x9eå\x9e\x8b_2': 'category_type',
+    'é\x87\x91é¡\x8d': 'amount',
+    'å¸³æ\x88¶': 'account',
+    'å\x90\x8dç¨±': 'description',
+    'å\x9c\x8bå®¶': 'country',
+    'å\x9c°é»\x9e': 'location',
+    'å\x82\x99è¨»': 'notes'
 }
 
 # Type_1 Options (Daily vs Travel)

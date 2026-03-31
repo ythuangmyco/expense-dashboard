@@ -124,13 +124,44 @@ class SheetsAPI:
             sheet_id = st.secrets["app"].get("sheet_id", SHEET_ID)
             csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={WORKSHEET_GID}"
 
-        # Download CSV data
+        # Download CSV data with proper UTF-8 handling
         response = requests.get(csv_url, timeout=10)
         response.raise_for_status()
 
+        # Try multiple encoding approaches
+        try:
+            # Method 1: Force UTF-8 encoding
+            response.encoding = 'utf-8'
+            csv_text = response.text
+        except UnicodeDecodeError:
+            try:
+                # Method 2: Use raw bytes with UTF-8
+                csv_text = response.content.decode('utf-8')
+            except UnicodeDecodeError:
+                # Method 3: Use raw bytes with UTF-8 and ignore errors
+                csv_text = response.content.decode('utf-8', errors='replace')
+
         # Read into DataFrame
         from io import StringIO
-        df = pd.read_csv(StringIO(response.text))
+        df = pd.read_csv(StringIO(csv_text))
+
+        # Try to fix column encoding if needed
+        if df.columns.size > 0 and any('\\x' in str(col) for col in df.columns):
+            logger.info("🔧 Attempting to fix UTF-8 encoding in column names...")
+            new_columns = []
+            for col in df.columns:
+                try:
+                    # Try to decode UTF-8 encoded strings
+                    if isinstance(col, str) and '\\x' in col:
+                        # This handles the æ\x97¥æ\x9c\x9f format
+                        fixed_col = col.encode('latin-1').decode('utf-8')
+                        new_columns.append(fixed_col)
+                        logger.info(f"✅ Fixed column: {col} → {fixed_col}")
+                    else:
+                        new_columns.append(col)
+                except:
+                    new_columns.append(col)
+            df.columns = new_columns
 
         return self._process_data(df, source="csv")
 
