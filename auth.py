@@ -17,7 +17,7 @@ def check_password():
     Set DISABLE_AUTH = False to enable family authentication
     """
     # Change this to False if you want to enable family authentication
-    DISABLE_AUTH = True
+    DISABLE_AUTH = False
 
     if DISABLE_AUTH:
         return True
@@ -128,7 +128,7 @@ def auth_sidebar():
     Add authentication status to sidebar with user info
     """
     # Skip sidebar auth info when authentication is disabled
-    DISABLE_AUTH = True
+    DISABLE_AUTH = False
 
     if DISABLE_AUTH:
         return  # Don't show auth status when disabled
