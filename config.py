@@ -12,6 +12,12 @@ SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=cs
 # Authentication
 FAMILY_PIN = "0727"  # Simple family PIN protection
 
+# Note: Authentication is currently DISABLED for easier family access
+# To re-enable password protection:
+# 1. Go to auth.py
+# 2. Change DISABLE_AUTH = True to DISABLE_AUTH = False
+# 3. Users will need to enter PIN "0727" to access the app
+
 # Column Mapping (matching your Google Form structure)
 # Handle both proper Chinese and UTF-8 encoded versions
 COLUMN_MAPPING = {

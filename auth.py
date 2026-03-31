@@ -11,7 +11,17 @@ def check_password():
     """
     Simple PIN authentication for family use
     Returns True if authenticated, False otherwise
+
+    Note: Authentication disabled for easier family access
+    Set DISABLE_AUTH = False in config.py to re-enable
     """
+    # Skip authentication for easier family use
+    # Change this to False if you want to re-enable password protection
+    DISABLE_AUTH = True
+
+    if DISABLE_AUTH:
+        return True
+
     return st.session_state.get("password_correct", False)
 
 
@@ -73,6 +83,12 @@ def auth_sidebar():
     """
     Add authentication status to sidebar
     """
+    # Skip sidebar auth info when authentication is disabled
+    DISABLE_AUTH = True
+
+    if DISABLE_AUTH:
+        return  # Don't show auth status when disabled
+
     if check_password():
         with st.sidebar:
             st.success("🔓 已登入")

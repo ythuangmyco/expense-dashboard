@@ -280,15 +280,15 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
         option_text = f"{date_str} - {desc} - {amount_str}"
         record_options.append((option_text, idx))
 
-    # Dropdown selection
+    # Dropdown selection with no default
     selected_option = st.selectbox(
         "選擇要編輯的支出記錄：",
-        options=[opt[0] for opt in record_options],
+        options=["請選擇記錄..."] + [opt[0] for opt in record_options],
         help="選擇一筆要編輯的支出記錄"
     )
 
     # Get selected record
-    if selected_option:
+    if selected_option and selected_option != "請選擇記錄...":
         selected_idx = next(idx for text, idx in record_options if text == selected_option)
         selected_row = recent_records.loc[selected_idx]
         original_row_index = selected_row['original_index']
@@ -382,11 +382,10 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
                     success = api.update_expense(original_row_index, updated_data)
                     if success:
                         st.success(f"✅ 已更新支出：{new_description} (NT${new_amount:,.0f})")
-                        st.balloons()  # Celebration animation
 
                         # Auto-refresh the page to show updated data
                         import time
-                        time.sleep(2)  # Let user see the success message
+                        time.sleep(1.5)  # Let user see the success message
                         st.rerun()  # Refresh the page
                         return True
                     else:
@@ -416,11 +415,10 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
                     })
                     if success:
                         st.success(f"✅ 已刪除支出：{desc} (NT${original_amount:,.0f}) - {date_str}")
-                        st.balloons()  # Celebration animation
 
                         # Auto-refresh the page to show updated data
                         import time
-                        time.sleep(2)  # Let user see the success message
+                        time.sleep(1.5)  # Let user see the success message
                         st.rerun()  # Refresh the page
                         return True
                     else:
