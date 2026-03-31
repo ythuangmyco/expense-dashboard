@@ -117,10 +117,36 @@ def show_api_status():
             st.rerun()
 
 
-def show_summary_metrics(df: pd.DataFrame):
-    """Display key metrics in mobile-friendly layout"""
+def get_comparison_period(start_date, end_date, df):
+    """Get the comparison period (previous period of same length)"""
+    if not start_date or not end_date:
+        return None, None, None
+
+    period_length = (end_date - start_date).days + 1
+    comp_end = start_date - timedelta(days=1)
+    comp_start = comp_end - timedelta(days=period_length - 1)
+
+    # Filter comparison data
+    if 'date' in df.columns and not df.empty:
+        try:
+            comp_start_dt = pd.to_datetime(comp_start)
+            comp_end_dt = pd.to_datetime(comp_end) + pd.Timedelta(days=1)
+
+            comp_df = df[
+                (df['date'] >= comp_start_dt) &
+                (df['date'] < comp_end_dt)
+            ]
+            return comp_start, comp_end, comp_df
+        except:
+            pass
+
+    return comp_start, comp_end, pd.DataFrame()
+
+
+def show_summary_metrics(df: pd.DataFrame, start_date=None, end_date=None, original_df=None):
+    """Display key metrics for the specified period with comparison"""
     if df.empty:
-        st.info("📊 尚無支出資料")
+        st.info("📊 所選期間內無支出資料")
         return
 
     # Check if required columns exist
@@ -128,67 +154,121 @@ def show_summary_metrics(df: pd.DataFrame):
         st.warning(f"📊 資料結構不完整。可用欄位: {list(df.columns)}")
         return
 
-    st.subheader("📈 本月概況")
+    # Determine period description
+    if start_date and end_date:
+        if start_date == end_date:
+            period_desc = f"📈 {start_date.strftime('%Y/%m/%d')} 當日統計"
+        else:
+            period_desc = f"📈 {start_date.strftime('%Y/%m/%d')} - {end_date.strftime('%Y/%m/%d')} 期間統計"
+    else:
+        period_desc = "📈 整體統計"
 
-    # Calculate metrics
-    current_month = datetime.now().month
-    current_year = datetime.now().year
+    st.subheader(period_desc)
 
-    # Filter current month data
+    # Calculate metrics for the filtered period (df is already filtered)
     try:
-        current_month_df = df[
-            (df['date'].dt.month == current_month) &
-            (df['date'].dt.year == current_year)
-        ]
+        total_amount = df['amount'].sum()
+        total_transactions = len(df)
+        avg_transaction = total_amount / total_transactions if total_transactions > 0 else 0
+
+        # Calculate daily average if we have a date range
+        daily_avg = 0
+        if start_date and end_date:
+            days_in_period = (end_date - start_date).days + 1
+            daily_avg = total_amount / days_in_period if days_in_period > 0 else 0
+
+        # Get top categories
+        top_category = "無資料"
+        category_amount = 0
+        if 'category_type' in df.columns and not df.empty:
+            category_summary = df.groupby('category_type')['amount'].sum().sort_values(ascending=False)
+            if not category_summary.empty:
+                top_category = category_summary.index[0]
+                category_amount = category_summary.iloc[0]
+
+        # Get comparison data if we have the original dataframe and date range
+        comp_metrics = {}
+        if original_df is not None and start_date and end_date and len(original_df) > len(df):
+            comp_start, comp_end, comp_df = get_comparison_period(start_date, end_date, original_df)
+            if not comp_df.empty:
+                comp_total = comp_df['amount'].sum()
+                comp_transactions = len(comp_df)
+                comp_avg = comp_total / comp_transactions if comp_transactions > 0 else 0
+                comp_daily = comp_total / ((comp_end - comp_start).days + 1) if comp_start and comp_end else 0
+
+                # Calculate changes
+                comp_metrics = {
+                    'total_change': total_amount - comp_total,
+                    'total_change_pct': ((total_amount - comp_total) / comp_total * 100) if comp_total > 0 else 0,
+                    'transactions_change': total_transactions - comp_transactions,
+                    'avg_change': avg_transaction - comp_avg,
+                    'daily_change': daily_avg - comp_daily
+                }
+
     except Exception as e:
-        st.error(f"日期處理錯誤: {str(e)}")
+        st.error(f"統計計算錯誤: {str(e)}")
         return
-
-    # Calculate metrics
-    total_this_month = current_month_df['amount'].sum() if not current_month_df.empty else 0
-    total_transactions = len(current_month_df)
-    avg_transaction = total_this_month / total_transactions if total_transactions > 0 else 0
-
-    # Last month for comparison
-    last_month = current_month - 1 if current_month > 1 else 12
-    last_month_year = current_year if current_month > 1 else current_year - 1
-
-    last_month_df = df[
-        (df['date'].dt.month == last_month) &
-        (df['date'].dt.year == last_month_year)
-    ]
-    last_month_total = last_month_df['amount'].sum() if not last_month_df.empty else 0
 
     # Display metrics in columns
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
+        delta_value = None
+        if 'total_change' in comp_metrics:
+            delta_value = f"{comp_metrics['total_change']:+,.0f}"
         st.metric(
-            "本月總支出",
-            f"NT${total_this_month:,.0f}",
-            delta=f"NT${total_this_month - last_month_total:,.0f}" if last_month_total > 0 else None
+            "總支出",
+            f"NT${total_amount:,.0f}",
+            delta=delta_value
         )
 
     with col2:
+        delta_value = None
+        if 'transactions_change' in comp_metrics:
+            delta_value = f"{comp_metrics['transactions_change']:+,}"
         st.metric(
             "交易次數",
             f"{total_transactions:,}",
-            delta=f"{total_transactions - len(last_month_df)}" if not last_month_df.empty else None
+            delta=delta_value
         )
 
     with col3:
+        delta_value = None
+        if 'avg_change' in comp_metrics:
+            delta_value = f"{comp_metrics['avg_change']:+,.0f}"
         st.metric(
             "平均單筆",
-            f"NT${avg_transaction:,.0f}"
+            f"NT${avg_transaction:,.0f}",
+            delta=delta_value
         )
 
     with col4:
-        # Most frequent category this month
-        if not current_month_df.empty and 'category_type' in current_month_df.columns:
-            top_category = current_month_df['category_type'].value_counts().index[0]
-            st.metric("主要支出", top_category)
+        if daily_avg > 0:
+            delta_value = None
+            if 'daily_change' in comp_metrics:
+                delta_value = f"{comp_metrics['daily_change']:+,.0f}"
+            st.metric(
+                "日均支出",
+                f"NT${daily_avg:,.0f}",
+                delta=delta_value
+            )
         else:
-            st.metric("主要支出", "無資料")
+            st.metric(
+                "主要支出",
+                top_category[:8] + "..." if len(str(top_category)) > 8 else str(top_category)
+            )
+
+    # Additional period stats
+    if total_transactions > 0:
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.caption(f"💡 最高支出類別: {top_category} (NT${category_amount:,.0f})")
+
+        with col2:
+            if start_date and end_date:
+                days = (end_date - start_date).days + 1
+                st.caption(f"📊 統計期間: {days} 天")
 
 
 def show_recent_transactions(df: pd.DataFrame, limit: int = 10):
@@ -329,6 +409,169 @@ def show_visualizations(df: pd.DataFrame):
             st.plotly_chart(fig, use_container_width=True)
 
 
+def get_period_dates(period_type, df):
+    """Get start and end dates for different period types"""
+    today = datetime.now().date()
+
+    if period_type == "今天":
+        return today, today
+    elif period_type == "最近7天":
+        return today - timedelta(days=6), today
+    elif period_type == "本週":
+        # Monday of current week
+        start = today - timedelta(days=today.weekday())
+        return start, today
+    elif period_type == "本月":
+        return today.replace(day=1), today
+    elif period_type == "上月":
+        # First day of last month
+        first_day_current = today.replace(day=1)
+        last_day_prev = first_day_current - timedelta(days=1)
+        first_day_prev = last_day_prev.replace(day=1)
+        return first_day_prev, last_day_prev
+    elif period_type == "最近30天":
+        return today - timedelta(days=29), today
+    elif period_type == "本年":
+        return today.replace(month=1, day=1), today
+    elif period_type == "全部期間":
+        if 'date' in df.columns and not df.empty:
+            try:
+                return df['date'].min().date(), df['date'].max().date()
+            except:
+                pass
+        return today, today
+    else:  # Custom
+        return None, None
+
+
+def additional_filters(df):
+    """Additional filtering options for categories and accounts"""
+    with st.expander("🔍 進階篩選", expanded=False):
+        col1, col2 = st.columns(2)
+
+        with col1:
+            # Category filter
+            available_categories = ["全部分類"] + sorted(df['category_type'].unique().tolist()) if 'category_type' in df.columns and not df.empty else ["全部分類"]
+            selected_categories = st.multiselect(
+                "支出分類",
+                options=available_categories,
+                default=["全部分類"],
+                help="選擇要顯示的支出分類"
+            )
+
+        with col2:
+            # Account filter
+            available_accounts = ["全部帳戶"] + sorted(df['account'].unique().tolist()) if 'account' in df.columns and not df.empty else ["全部帳戶"]
+            selected_accounts = st.multiselect(
+                "帳戶",
+                options=available_accounts,
+                default=["全部帳戶"],
+                help="選擇要顯示的帳戶"
+            )
+
+    return selected_categories, selected_accounts
+
+
+def apply_additional_filters(df, selected_categories, selected_accounts):
+    """Apply category and account filters to the dataframe"""
+    filtered_df = df.copy()
+
+    # Apply category filter
+    if "全部分類" not in selected_categories and selected_categories:
+        if 'category_type' in df.columns:
+            filtered_df = filtered_df[filtered_df['category_type'].isin(selected_categories)]
+
+    # Apply account filter
+    if "全部帳戶" not in selected_accounts and selected_accounts:
+        if 'account' in df.columns:
+            filtered_df = filtered_df[filtered_df['account'].isin(selected_accounts)]
+
+    return filtered_df
+
+
+def time_period_selector(df):
+    """Enhanced time period selection with presets"""
+    st.subheader("📅 時間範圍選擇")
+
+    # Period preset options
+    period_options = [
+        "今天", "最近7天", "本週", "本月", "上月",
+        "最近30天", "本年", "全部期間", "自定義範圍"
+    ]
+
+    # Initialize session state for period selection
+    if 'selected_period' not in st.session_state:
+        st.session_state.selected_period = "本月"
+
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        selected_period = st.selectbox(
+            "選擇時間範圍",
+            options=period_options,
+            index=period_options.index(st.session_state.selected_period) if st.session_state.selected_period in period_options else 3,
+            help="選擇預設的時間範圍或自定義"
+        )
+        st.session_state.selected_period = selected_period
+
+    with col2:
+        # Quick period buttons
+        st.markdown("**快速選擇:**")
+        quick_col1, quick_col2 = st.columns(2)
+        with quick_col1:
+            if st.button("今天", help="查看今日支出"):
+                st.session_state.selected_period = "今天"
+                st.rerun()
+        with quick_col2:
+            if st.button("本月", help="查看本月支出"):
+                st.session_state.selected_period = "本月"
+                st.rerun()
+
+    # Get dates based on selection
+    if selected_period == "自定義範圍":
+        st.caption("🗓️ 自定義日期範圍")
+        col1, col2 = st.columns(2)
+
+        # Default to current month if no data
+        default_start = datetime.now().replace(day=1).date()
+        default_end = datetime.now().date()
+
+        # If we have data, use actual date range for defaults
+        if 'date' in df.columns and not df.empty:
+            try:
+                min_date = df['date'].min().date()
+                max_date = df['date'].max().date()
+                default_start = min_date
+                default_end = max_date
+            except:
+                pass
+
+        with col1:
+            start_date = st.date_input(
+                "開始日期",
+                value=default_start,
+                help="選擇篩選的開始日期"
+            )
+
+        with col2:
+            end_date = st.date_input(
+                "結束日期",
+                value=default_end,
+                help="選擇篩選的結束日期"
+            )
+    else:
+        start_date, end_date = get_period_dates(selected_period, df)
+
+        # Show selected period info
+        if start_date and end_date:
+            if start_date == end_date:
+                st.info(f"📅 **{selected_period}**: {start_date.strftime('%Y年%m月%d日')}")
+            else:
+                st.info(f"📅 **{selected_period}**: {start_date.strftime('%Y/%m/%d')} 至 {end_date.strftime('%Y/%m/%d')}")
+
+    return start_date, end_date, selected_period
+
+
 def main_dashboard():
     """Main dashboard page"""
     st.title("📊 支出總覽")
@@ -342,8 +585,58 @@ def main_dashboard():
         st.info("💡 請使用「新增支出」頁面開始記錄您的支出")
         return
 
-    # Show summary metrics
-    show_summary_metrics(df)
+    # Enhanced time period selection
+    start_date, end_date, selected_period = time_period_selector(df)
+
+    if not start_date or not end_date:
+        st.warning("⚠️ 請選擇有效的日期範圍")
+        return
+
+    # Filter data by date range
+    filtered_df = df.copy()
+    if 'date' in df.columns and not df.empty:
+        try:
+            # Convert dates for filtering
+            start_datetime = pd.to_datetime(start_date)
+            end_datetime = pd.to_datetime(end_date) + pd.Timedelta(days=1)  # Include end date
+
+            filtered_df = df[
+                (df['date'] >= start_datetime) &
+                (df['date'] < end_datetime)
+            ]
+
+        except Exception as e:
+            st.warning(f"⚠️ 日期篩選錯誤: {str(e)}")
+            filtered_df = df  # Use original data if filtering fails
+
+    # Additional filtering options
+    if not filtered_df.empty:
+        selected_categories, selected_accounts = additional_filters(filtered_df)
+        filtered_df = apply_additional_filters(filtered_df, selected_categories, selected_accounts)
+
+        # Show comprehensive filter summary
+        filter_parts = [f"**{selected_period}**"]
+
+        if "全部分類" not in selected_categories and selected_categories:
+            filter_parts.append(f"分類: {', '.join(selected_categories)}")
+
+        if "全部帳戶" not in selected_accounts and selected_accounts:
+            filter_parts.append(f"帳戶: {', '.join(selected_accounts)}")
+
+        if len(filtered_df) != len(df):
+            filter_summary = " | ".join(filter_parts)
+            st.success(f"📊 {filter_summary} - {len(filtered_df)}/{len(df)} 筆記錄")
+        else:
+            st.info(f"📊 顯示所有 {len(df)} 筆記錄")
+
+    # Show summary metrics for filtered period with comparison
+    show_summary_metrics(filtered_df, start_date, end_date, df)
+
+    # Show comparison period info if available
+    if len(filtered_df) != len(df) and start_date and end_date:
+        comp_start, comp_end, comp_df = get_comparison_period(start_date, end_date, df)
+        if not comp_df.empty:
+            st.caption(f"📊 與前期比較 ({comp_start.strftime('%m/%d')} - {comp_end.strftime('%m/%d')}, {len(comp_df)} 筆記錄)")
 
     st.divider()
 
@@ -351,10 +644,10 @@ def main_dashboard():
     col1, col2 = st.columns([2, 1])
 
     with col1:
-        show_visualizations(df)
+        show_visualizations(filtered_df)
 
     with col2:
-        show_recent_transactions(df)
+        show_recent_transactions(filtered_df)
 
 
 def add_expense_page():

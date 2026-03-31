@@ -303,11 +303,18 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
                 index=CATEGORIES.index(current_category_type) if current_category_type in CATEGORIES else 0
             )
 
+            # Safe amount conversion - fix type consistency
+            try:
+                current_amount = float(selected_row.get('amount', 0))
+            except (ValueError, TypeError):
+                current_amount = 0.0
+
             new_amount = st.number_input(
                 "金額",
-                min_value=0,
-                step=10,
-                value=float(selected_row.get('amount', 0))
+                min_value=0.0,
+                step=10.0,
+                value=current_amount,  # Use consistent float type
+                format="%.0f"
             )
 
             new_description = st.text_input(
@@ -315,50 +322,50 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
                 value=selected_row.get('description', '')
             )
 
-            # Action buttons
-            col_update, col_delete = st.columns(2)
+            # Action selection and single submit button
+            action = st.selectbox(
+                "選擇動作",
+                ["更新支出", "刪除支出"],
+                index=0
+            )
 
-            with col_update:
-                update_submitted = st.form_submit_button(
-                    "💾 更新",
-                    use_container_width=True,
-                    type="primary"
-                )
+            # Single submit button
+            submitted = st.form_submit_button(
+                f"{'💾 更新' if action == '更新支出' else '🗑️ 刪除'}",
+                use_container_width=True,
+                type="primary" if action == "更新支出" else "secondary"
+            )
 
-            with col_delete:
-                delete_submitted = st.form_submit_button(
-                    "🗑️ 刪除",
-                    use_container_width=True,
-                    type="secondary"
-                )
+            if submitted:
+                if action == "更新支出":
+                    # Prepare updated data
+                    updated_data = {
+                        "date": new_date.strftime("%Y-%m-%d"),
+                        "type_1": new_type_1,
+                        "category_type": new_category_type,
+                        "amount": new_amount,
+                        "account": new_account,
+                        "description": new_description,
+                        "country": selected_row.get('country', DEFAULT_COUNTRY),
+                        "location": selected_row.get('location', DEFAULT_LOCATION),
+                        "notes": selected_row.get('notes', '')
+                    }
 
-            if update_submitted:
-                # Prepare updated data
-                updated_data = {
-                    "date": new_date.strftime("%Y-%m-%d"),
-                    "type_1": new_type_1,
-                    "category_type": new_category_type,
-                    "amount": new_amount,
-                    "account": new_account,
-                    "description": new_description,
-                    "country": selected_row.get('country', DEFAULT_COUNTRY),
-                    "location": selected_row.get('location', DEFAULT_LOCATION),
-                    "notes": selected_row.get('notes', '')
-                }
+                    # Update in sheet
+                    success = api.update_expense(selected_idx, updated_data)
+                    if success:
+                        st.success("✅ 支出已更新")
+                        return True
+                    else:
+                        st.error("❌ 更新失敗")
 
-                # Update in sheet
-                success = api.update_expense(selected_idx, updated_data)
-                if success:
-                    st.success("✅ 支出已更新")
-                    return True
-
-            if delete_submitted:
-                # Direct deletion without confirmation button (to avoid form issues)
-                success = api.delete_expense(selected_idx)
-                if success:
-                    st.success("✅ 支出已刪除")
-                    return True
-                else:
-                    st.error("❌ 刪除失敗")
+                elif action == "刪除支出":
+                    # Direct deletion
+                    success = api.delete_expense(selected_idx)
+                    if success:
+                        st.success("✅ 支出已刪除")
+                        return True
+                    else:
+                        st.error("❌ 刪除失敗")
 
     return False
