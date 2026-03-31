@@ -223,11 +223,15 @@ class SheetsAPI:
         logger.info(f"📊 Raw DataFrame shape: {df.shape}")
         if 'amount' in df.columns or '金額' in df.columns:
             amount_col = '金額' if '金額' in df.columns else 'amount'
-            # Convert to numeric for sum calculation
-            numeric_amounts = pd.to_numeric(df[amount_col], errors='coerce')
-            total = numeric_amounts.sum()
-            logger.info(f"💰 Total amount before processing: {total:,.0f}")
-            st.info(f"📊 載入原始資料: {len(df)} 筆, 總額: NT${total:,.0f}")
+            # Convert to numeric for sum calculation - SAFE conversion
+            try:
+                numeric_amounts = pd.to_numeric(df[amount_col], errors='coerce')
+                total = float(numeric_amounts.sum()) if numeric_amounts.notna().any() else 0.0
+                logger.info(f"💰 Total amount before processing: {total}")
+                st.info(f"📊 載入原始資料: {len(df)} 筆, 總額: NT${total:,.0f}")
+            except Exception as e:
+                logger.error(f"❌ Error calculating initial total: {e}")
+                st.info(f"📊 載入原始資料: {len(df)} 筆")
 
         # Clean and process the data
         return self._process_data(df, source="api")
@@ -496,12 +500,18 @@ class SheetsAPI:
                 logger.info(f"💰 Selected best amount column: {amount_col} (total: {best_total:,.0f})")
 
                 # If the best total is still way off from expected ~2.5M, warn user
-                if best_total < 1000000:
-                    logger.warning(f"💰 Amount total {best_total:,.0f} is much lower than expected ~2.5M")
-                    st.warning(f"⚠️ 計算的總金額 NT${best_total:,.0f} 遠低於預期的 250萬+")
+                try:
+                    best_total_float = float(best_total) if best_total else 0.0
+                    if best_total_float < 1000000:
+                        logger.warning(f"💰 Amount total {best_total_float} is much lower than expected ~2.5M")
+                        st.warning(f"⚠️ 計算的總金額 NT${best_total_float:,.0f} 遠低於預期的 250萬+")
+                        st.info("💡 可能需要檢查工作表或欄位設定")
+                    elif best_total_float > 2000000:
+                        st.success(f"✅ 找到正確的金額總計: NT${best_total_float:,.0f}")
+                except Exception as e:
+                    logger.error(f"❌ Error formatting best total: {e}")
+                    st.warning("⚠️ 金額計算發生錯誤")
                     st.info("💡 可能需要檢查工作表或欄位設定")
-                elif best_total > 2000000:
-                    st.success(f"✅ 找到正確的金額總計: NT${best_total:,.0f}")
 
             else:
                 logger.error("❌ No amount column found!")
@@ -521,36 +531,58 @@ class SheetsAPI:
 
                 def clean_amount(value):
                     """Clean amount values to handle various formats"""
-                    if pd.isna(value) or value == '':
-                        return None
-
-                    # Convert to string first
-                    str_val = str(value).strip()
-
-                    # Remove common formatting
-                    str_val = str_val.replace(',', '')  # Remove commas: "1,234" → "1234"
-                    str_val = str_val.replace('NT$', '')  # Remove currency: "NT$1234" → "1234"
-                    str_val = str_val.replace('$', '')  # Remove dollar signs
-                    str_val = str_val.replace(' ', '')  # Remove spaces
-                    str_val = str_val.replace('台幣', '')  # Remove currency text
-                    str_val = str_val.replace('元', '')  # Remove currency unit
-
-                    # Handle negative values in parentheses: "(1234)" → "-1234"
-                    if str_val.startswith('(') and str_val.endswith(')'):
-                        str_val = '-' + str_val[1:-1]
-
                     try:
-                        return float(str_val)
-                    except:
+                        if pd.isna(value) or value == '' or value is None:
+                            return None
+
+                        # Convert to string first
+                        str_val = str(value).strip()
+
+                        # If it's already a number, try converting directly first
+                        try:
+                            return float(str_val)
+                        except:
+                            pass
+
+                        # Remove common formatting
+                        str_val = str_val.replace(',', '')  # Remove commas: "1,234" → "1234"
+                        str_val = str_val.replace('NT$', '')  # Remove currency: "NT$1234" → "1234"
+                        str_val = str_val.replace('$', '')  # Remove dollar signs
+                        str_val = str_val.replace(' ', '')  # Remove spaces
+                        str_val = str_val.replace('台幣', '')  # Remove currency text
+                        str_val = str_val.replace('元', '')  # Remove currency unit
+
+                        # Handle negative values in parentheses: "(1234)" → "-1234"
+                        if str_val.startswith('(') and str_val.endswith(')'):
+                            str_val = '-' + str_val[1:-1]
+
+                        # Final conversion attempt
+                        if str_val:
+                            return float(str_val)
+                        else:
+                            return None
+
+                    except Exception as e:
+                        logger.warning(f"Could not clean amount value '{value}': {e}")
                         return None
 
                 # Apply cleaning function
+                logger.info(f"💰 Applying cleaning function to {amount_col}")
                 df['amount'] = df[amount_col].apply(clean_amount)
 
-                # Show cleaning results
+                # If cleaning failed completely, try simple numeric conversion as fallback
+                if df['amount'].notna().sum() == 0:
+                    logger.warning("💰 Cleaning failed, trying simple conversion...")
+                    df['amount'] = pd.to_numeric(df[amount_col], errors='coerce')
+
+                # Show cleaning results - FIX formatting error
                 cleaned_valid = df['amount'].notna().sum()
-                cleaned_total = df['amount'].sum()
-                logger.info(f"💰 After cleaning: {cleaned_valid} valid amounts, total: {cleaned_total:,.0f}")
+                try:
+                    cleaned_total = float(df['amount'].sum()) if df['amount'].notna().any() else 0
+                except:
+                    cleaned_total = 0
+
+                logger.info(f"💰 After cleaning: {cleaned_valid} valid amounts, total: {cleaned_total}")
 
                 # Show before/after samples to verify cleaning worked
                 if len(df) > 0:
@@ -563,15 +595,15 @@ class SheetsAPI:
 
                 # If total is now much higher, we found the issue
                 if cleaned_total > 2000000:
-                    logger.info(f"🎯 SUCCESS: Found correct total after cleaning: {cleaned_total:,.0f}")
+                    logger.info(f"🎯 SUCCESS: Found correct total after cleaning: {cleaned_total}")
                     st.success(f"✅ 資料清理成功！正確總額: NT${cleaned_total:,.0f}")
                 elif cleaned_total < 1000000:
-                    logger.warning(f"⚠️ Total still low after cleaning: {cleaned_total:,.0f}")
+                    logger.warning(f"⚠️ Total still low after cleaning: {cleaned_total}")
                     st.warning(f"⚠️ 清理後總額仍偏低: NT${cleaned_total:,.0f}")
 
-                    # Show more debugging info
+                    # Show more debugging info - SAFE formatting
                     unique_formats = df[amount_col].dropna().astype(str).str.strip().value_counts().head(10)
-                    logger.info(f"💰 Most common amount formats in sheet: {unique_formats.to_dict()}")
+                    logger.info(f"💰 Most common amount formats in sheet: {dict(unique_formats)}")
                     st.info("🔍 檢查金額格式 - 查看日誌了解詳細資訊")
 
                 # Show conversion results
@@ -654,9 +686,13 @@ class SheetsAPI:
                 logger.info(f"📊 Final filter: removed {rows_before - rows_after} rows (completely empty only)")
 
                 if len(df) > 0:
-                    final_total = df['amount'].sum()
-                    logger.info(f"💰 Final total after all processing: {final_total:,.0f}")
-                    st.success(f"✅ 處理完成: {len(df)} 筆有效記錄, 總額: NT${final_total:,.0f}")
+                    try:
+                        final_total = float(df['amount'].sum()) if df['amount'].notna().any() else 0.0
+                        logger.info(f"💰 Final total after all processing: {final_total}")
+                        st.success(f"✅ 處理完成: {len(df)} 筆有效記錄, 總額: NT${final_total:,.0f}")
+                    except Exception as e:
+                        logger.error(f"❌ Error calculating final total: {e}")
+                        st.success(f"✅ 處理完成: {len(df)} 筆有效記錄")
 
                     # Show summary of what was filtered out
                     if rows_before > rows_after:
@@ -677,9 +713,13 @@ class SheetsAPI:
                 rows_after = len(df)
 
                 if len(df) > 0:
-                    final_total = df['amount'].sum()
-                    logger.info(f"💰 Final total after all processing: {final_total:,.0f}")
-                    st.success(f"✅ 處理完成: {len(df)} 筆有效記錄, 總額: NT${final_total:,.0f}")
+                    try:
+                        final_total = float(df['amount'].sum()) if df['amount'].notna().any() else 0.0
+                        logger.info(f"💰 Final total after all processing: {final_total}")
+                        st.success(f"✅ 處理完成: {len(df)} 筆有效記錄, 總額: NT${final_total:,.0f}")
+                    except Exception as e:
+                        logger.error(f"❌ Error calculating final total: {e}")
+                        st.success(f"✅ 處理完成: {len(df)} 筆有效記錄")
 
                     total_filtered = rows_before - rows_after
                     if total_filtered > 0:
