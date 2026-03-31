@@ -183,34 +183,32 @@ def expense_input_form(df: pd.DataFrame) -> bool:
                     if st.button(desc, key=f"desc_{i}"):
                         description = desc
 
-        # Location selection with cascade (outside form for proper refresh)
+        # Location selection
         st.caption("📍 地點資訊")
+        loc_col1, loc_col2 = st.columns(2)
 
-    # Location selection (outside form to allow dynamic updates)
-    loc_col1, loc_col2 = st.columns(2)
-    with loc_col1:
-        country = st.selectbox(
-            "國家",
-            options=list(LOCATIONS_MAP.keys()),
-            index=list(LOCATIONS_MAP.keys()).index(DEFAULT_COUNTRY) if DEFAULT_COUNTRY in LOCATIONS_MAP else 0,
-            key="country_select"
-        )
+        with loc_col1:
+            country = st.selectbox(
+                "國家",
+                options=list(LOCATIONS_MAP.keys()),
+                index=list(LOCATIONS_MAP.keys()).index(DEFAULT_COUNTRY) if DEFAULT_COUNTRY in LOCATIONS_MAP else 0,
+                key="country_select"
+            )
 
-    with loc_col2:
-        available_locations = LOCATIONS_MAP.get(country, ["其他"])
-        default_location_index = 0
-        if country == DEFAULT_COUNTRY and DEFAULT_LOCATION in available_locations:
-            default_location_index = available_locations.index(DEFAULT_LOCATION)
+        with loc_col2:
+            available_locations = LOCATIONS_MAP.get(country, ["其他"])
+            default_location_index = 0
+            if country == DEFAULT_COUNTRY and DEFAULT_LOCATION in available_locations:
+                default_location_index = available_locations.index(DEFAULT_LOCATION)
 
-        location = st.selectbox(
-            "地點",
-            options=available_locations,
-            index=default_location_index,
-            key="location_select"
-        )
+            location = st.selectbox(
+                "地點",
+                options=available_locations,
+                index=default_location_index,
+                key="location_select"
+            )
 
-    # Notes (optional)
-    with st.form("expense_form_continued"):
+        # Notes (optional)
         notes = st.text_area(
             "備註 (選填) 📄",
             placeholder="其他備註資訊...",
