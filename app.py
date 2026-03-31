@@ -617,16 +617,40 @@ def time_period_selector(df):
         st.session_state.selected_period = selected_period
 
     with col2:
-        # Quick period buttons
+        # Quick period buttons with more options
         st.markdown("**快速選擇:**")
-        quick_col1, quick_col2 = st.columns(2)
-        with quick_col1:
-            if st.button("今天", help="查看今日支出"):
+
+        # Row 1: Most common periods
+        quick_row1_col1, quick_row1_col2 = st.columns(2)
+        with quick_row1_col1:
+            if st.button("今天", help="查看今日支出", use_container_width=True):
                 st.session_state.selected_period = "今天"
                 st.rerun()
-        with quick_col2:
-            if st.button("本月", help="查看本月支出"):
+        with quick_row1_col2:
+            if st.button("最近7天", help="查看最近一週支出", use_container_width=True):
+                st.session_state.selected_period = "最近7天"
+                st.rerun()
+
+        # Row 2: Weekly and monthly
+        quick_row2_col1, quick_row2_col2 = st.columns(2)
+        with quick_row2_col1:
+            if st.button("本週", help="查看本週支出", use_container_width=True):
+                st.session_state.selected_period = "本週"
+                st.rerun()
+        with quick_row2_col2:
+            if st.button("本月", help="查看本月支出", use_container_width=True):
                 st.session_state.selected_period = "本月"
+                st.rerun()
+
+        # Row 3: Extended periods
+        quick_row3_col1, quick_row3_col2 = st.columns(2)
+        with quick_row3_col1:
+            if st.button("上月", help="查看上月支出", use_container_width=True):
+                st.session_state.selected_period = "上月"
+                st.rerun()
+        with quick_row3_col2:
+            if st.button("本年", help="查看本年度支出", use_container_width=True):
+                st.session_state.selected_period = "本年"
                 st.rerun()
 
     # Get dates based on selection
