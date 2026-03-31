@@ -794,17 +794,16 @@ class SheetsAPI:
                     except Exception as e:
                         logger.error(f"❌ Error calculating final total: {e}")
 
-                    # Show summary of what was filtered out
+                    # Log summary of what was filtered out
                     if rows_before > rows_after:
                         filtered_count = rows_before - rows_after
-                        st.info(f"📊 最終篩選: 移除 {filtered_count} 筆無效金額記錄")
+                        logger.info(f"📊 Final filter: removed {filtered_count} invalid amount records")
 
-                    # Show overall filtering summary
+                    # Log filtering summary without showing to user
                     if source == "api":
                         original_rows = 1577  # From the debug message
                         total_filtered = original_rows - len(df)
                         if total_filtered > 0:
-                            st.info(f"📊 總篩選摘要: 原始 {original_rows} 筆 → 有效 {len(df)} 筆 (移除 {total_filtered} 筆空白/無效記錄)")
                             logger.info(f"📊 Data pipeline summary: {original_rows} → {len(df)} rows (filtered {total_filtered})")
             elif 'amount' in df.columns:
                 # If only amount exists, just filter by amount
@@ -822,7 +821,7 @@ class SheetsAPI:
 
                     total_filtered = rows_before - rows_after
                     if total_filtered > 0:
-                        st.info(f"📊 篩選摘要: 共 {total_filtered} 筆記錄被過濾 (無效金額)")
+                        logger.info(f"📊 Filter summary: {total_filtered} records filtered (invalid amounts)")
             else:
                 if len(df) > 0:
                     st.success(f"✅ 處理完成: {len(df)} 筆記錄")

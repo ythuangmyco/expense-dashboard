@@ -256,53 +256,40 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
     # CRITICAL: Store the original index to map back to the correct row
     df_sorted['original_index'] = df_sorted['index']  # This preserves the original row position
 
-    # Display recent expenses for selection
-    st.caption("選擇要編輯的支出:")
+    # Create a simple dropdown to select record to edit
+    recent_records = df_sorted.head(50)  # Show last 50 expenses for dropdown
 
-    # Create a selection table
-    display_df = df_sorted.head(20).copy()  # Show last 20 expenses
-
-    if 'date' in display_df.columns:
-        display_df['日期'] = display_df['date'].dt.strftime('%m/%d')
-    display_df['描述'] = display_df.get('description', '')
-
-    # Safely format amounts - ensure they're numeric first
-    def safe_format_amount(x):
+    # Create options for dropdown
+    record_options = []
+    for idx, row in recent_records.iterrows():
+        date_str = row['date'].strftime('%m/%d') if pd.notna(row['date']) else 'N/A'
+        desc = str(row.get('description', ''))[:20] + ('...' if len(str(row.get('description', ''))) > 20 else '')
         try:
-            return f"NT${float(x):,.0f}"
+            amount_str = f"NT${float(row.get('amount', 0)):,.0f}"
         except:
-            return "NT$0"
+            amount_str = "NT$0"
 
-    display_df['金額'] = display_df.get('amount', 0).apply(safe_format_amount)
-    display_df['帳戶'] = display_df.get('account', '')
+        option_text = f"{date_str} - {desc} - {amount_str}"
+        record_options.append((option_text, idx))
 
-    # Create selection interface
-    selected_cols = ['日期', '描述', '金額', '帳戶']
-    selection_df = display_df[selected_cols].copy()
-
-    # Use dataframe for selection
-    event = st.dataframe(
-        selection_df,
-        use_container_width=True,
-        hide_index=True,
-        on_select="rerun",
-        selection_mode="single-row"
+    # Dropdown selection
+    selected_option = st.selectbox(
+        "選擇要編輯的支出記錄：",
+        options=[opt[0] for opt in record_options],
+        help="選擇一筆要編輯的支出記錄"
     )
 
-    if event.selection and len(event.selection.rows) > 0:
-        selected_display_idx = event.selection.rows[0]  # Index in the displayed table
-        selected_row = df_sorted.iloc[selected_display_idx]  # Get the full row data
-
-        # Get the ORIGINAL index for updating the correct row in Google Sheets
+    # Get selected record
+    if selected_option:
+        selected_idx = next(idx for text, idx in record_options if text == selected_option)
+        selected_row = recent_records.loc[selected_idx]
         original_row_index = selected_row['original_index']
 
-        # Debug info
-        st.caption(f"🔍 Debug: 選擇顯示行 {selected_display_idx}, 原始資料行 {original_row_index}")
-
         st.divider()
-        st.subheader("編輯所選支出")
 
         # Show current values and allow editing
+        st.subheader(f"編輯支出：{selected_row.get('description', 'N/A')}")
+
         with st.form("edit_expense_form"):
             col1, col2 = st.columns(2)
 
