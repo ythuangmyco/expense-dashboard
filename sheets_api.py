@@ -980,24 +980,57 @@ class SheetsAPI:
             return False
 
         try:
-            # Calculate actual row number in Google Sheets (header is row 1, data starts at row 2)
-            # So if row_index is 0 (first data row), it should delete row 2
-            row_number = row_index + 2
+            # DEBUG: Let's find the actual row by searching for the content
+            target_desc = expense_info.get('description', '') if expense_info else ''
+            target_amount = str(expense_info.get('amount', '')) if expense_info else ''
 
-            logger.info(f"🗑️ Attempting to delete expense at row index {row_index} (sheet row {row_number})")
-            if expense_info:
-                logger.info(f"   Deleting: {expense_info.get('description', 'N/A')} - NT${expense_info.get('amount', 0)}")
+            logger.info(f"🔍 Searching for row with description '{target_desc}' and amount '{target_amount}'")
+
+            # Get all data to find the correct row
+            all_values = self.worksheet.get_all_values()
+            logger.info(f"📊 Total sheet rows: {len(all_values)}")
+
+            actual_row_to_delete = None
+            for i, row_data in enumerate(all_values):
+                if i == 0:  # Skip header
+                    continue
+
+                # Check if this row matches our target
+                row_desc = row_data[5] if len(row_data) > 5 else ''  # Description is usually column 6 (index 5)
+                row_amount = row_data[3] if len(row_data) > 3 else ''  # Amount is usually column 4 (index 3)
+
+                logger.info(f"📋 Row {i+1}: desc='{row_desc}', amount='{row_amount}'")
+
+                # Clean amount comparison
+                try:
+                    row_amount_clean = str(float(row_amount.replace(',', '').replace('"', '').replace('$', ''))).split('.')[0]
+                    target_amount_clean = str(float(target_amount)).split('.')[0]
+
+                    if row_desc.strip() == target_desc.strip() and row_amount_clean == target_amount_clean:
+                        actual_row_to_delete = i + 1  # +1 because sheet rows are 1-indexed
+                        logger.info(f"🎯 FOUND MATCH at sheet row {actual_row_to_delete}")
+                        break
+                except Exception as e:
+                    logger.info(f"Amount comparison failed for row {i+1}: {e}")
+
+            if actual_row_to_delete is None:
+                logger.error(f"❌ Could not find row with description '{target_desc}' and amount '{target_amount}'")
+                # Fallback to original method
+                actual_row_to_delete = row_index + 2
+                logger.warning(f"🔄 Falling back to calculated row {actual_row_to_delete}")
+
+            logger.info(f"🗑️ Attempting to delete sheet row {actual_row_to_delete}")
 
             # Get the current row content before deletion for verification
             try:
-                current_values = self.worksheet.row_values(row_number)
-                logger.info(f"📋 Row {row_number} content before deletion: {current_values}")
+                current_values = self.worksheet.row_values(actual_row_to_delete)
+                logger.info(f"📋 Row {actual_row_to_delete} content before deletion: {current_values}")
             except Exception as e:
                 logger.warning(f"Could not read row before deletion: {e}")
 
             # Delete the row
-            self.worksheet.delete_rows(row_number)
-            logger.info(f"✅ Successfully deleted row {row_number} from Google Sheets")
+            self.worksheet.delete_rows(actual_row_to_delete)
+            logger.info(f"✅ Successfully deleted row {actual_row_to_delete} from Google Sheets")
 
             # Clear ALL caches to ensure data refresh
             st.cache_data.clear()
@@ -1017,9 +1050,20 @@ class SheetsAPI:
             return True
 
         except Exception as e:
-            logger.error(f"❌ Failed to delete expense at row {row_index}: {str(e)}")
+            error_msg = str(e)
+            logger.error(f"❌ Failed to delete expense: {error_msg}")
             if expense_info:
-                logger.error(f"   Failed item: {expense_info.get('description', 'N/A')}")
+                logger.error(f"   Failed item: {expense_info.get('description', 'N/A')} - NT${expense_info.get('amount', 0)}")
+
+            # Show specific error to user
+            if "403" in error_msg:
+                st.error("❌ 權限不足：請確認 Google Sheets 權限設定")
+            elif "404" in error_msg:
+                st.error("❌ 找不到該記錄：可能已被刪除")
+            else:
+                st.error(f"❌ 刪除失敗：{error_msg}")
+                st.info("💡 請重新整理頁面後重試，或檢查該記錄是否已被刪除")
+
             return False
 
     def get_status(self) -> Dict:

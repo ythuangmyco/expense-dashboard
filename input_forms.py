@@ -238,6 +238,14 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
     """
     st.subheader("✏️ 編輯支出")
 
+    # Add refresh button
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        if st.button("🔄 重新整理資料"):
+            from sheets_api import refresh_data
+            refresh_data()
+            st.rerun()
+
     if df.empty:
         st.info("📊 目前沒有支出資料可編輯")
         return False
@@ -388,17 +396,26 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
                 elif action == "刪除支出":
                     # Show confirmation with details
                     desc = selected_row.get('description', 'N/A')
-                    amount = selected_row.get('amount', 0)
-                    date_str = new_date.strftime('%Y/%m/%d')
 
-                    # Direct deletion - use ORIGINAL row index, not display index
+                    # Get the original amount (not the form amount for deletion)
+                    try:
+                        original_amount = float(selected_row.get('amount', 0))
+                    except:
+                        original_amount = 0
+
+                    date_str = selected_row['date'].strftime('%Y/%m/%d') if pd.notna(selected_row['date']) else 'N/A'
+
+                    # Show what we're about to delete
+                    st.info(f"🗑️ 準備刪除: {desc} (NT${original_amount:,.0f}) - {date_str}")
+
+                    # Direct deletion with better row finding
                     success = api.delete_expense(original_row_index, {
                         'description': desc,
-                        'amount': amount,
+                        'amount': original_amount,
                         'date': date_str
                     })
                     if success:
-                        st.success(f"✅ 已刪除支出：{desc} (NT${amount:,.0f}) - {date_str}")
+                        st.success(f"✅ 已刪除支出：{desc} (NT${original_amount:,.0f}) - {date_str}")
                         st.balloons()  # Celebration animation
 
                         # Auto-refresh the page to show updated data
@@ -408,6 +425,13 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
                         return True
                     else:
                         st.error(f"❌ 刪除失敗：{desc}")
-                        st.info("💡 請檢查網路連線或重新嘗試")
+
+                        # Show debugging info
+                        with st.expander("🔍 除錯資訊", expanded=False):
+                            st.write(f"原始索引: {original_row_index}")
+                            st.write(f"描述: {desc}")
+                            st.write(f"金額: {original_amount}")
+                            st.write(f"日期: {date_str}")
+                            st.write("請檢查是否該記錄已被其他人刪除，或重新整理頁面後重試")
 
     return False
