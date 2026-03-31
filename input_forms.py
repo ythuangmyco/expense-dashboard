@@ -117,38 +117,29 @@ def expense_input_form(df: pd.DataFrame) -> bool:
         # Get smart suggestions for this category
         suggestions = smart_suggestions(df, category_type)
 
-        # Amount input with suggestions
-        col3, col4 = st.columns([2, 1])
-        with col3:
-            amount = st.number_input(
-                "金額 💰",
-                min_value=0,
-                step=10,
-                value=suggestions.get("avg_amount", 0),
-                help="支出金額"
-            )
-        with col4:
-            if suggestions["amounts"]:
-                st.caption("常用金額:")
-                for amt in suggestions["amounts"][:3]:
-                    if st.button(f"NT${int(amt)}", key=f"amt_{amt}"):
-                        amount = amt
+        # Amount input (suggestions removed to fix form issues)
+        amount = st.number_input(
+            "金額 💰",
+            min_value=0,
+            step=10,
+            value=suggestions.get("avg_amount", 0),
+            help="支出金額"
+        )
 
-        # Description with suggestions
+        # Show amount suggestions as text only
+        if suggestions["amounts"]:
+            st.caption(f"💡 常用金額: {', '.join([f'NT${int(amt)}' for amt in suggestions['amounts'][:3]])}")
+
+        # Description input
         description = st.text_input(
             "描述 📝",
             placeholder="支出描述...",
             help="簡單描述這筆支出"
         )
 
-        # Show description suggestions
+        # Show description suggestions as text only
         if suggestions["descriptions"]:
-            st.caption("常用描述:")
-            desc_cols = st.columns(min(len(suggestions["descriptions"]), 3))
-            for i, desc in enumerate(suggestions["descriptions"][:3]):
-                with desc_cols[i]:
-                    if st.button(desc, key=f"desc_{i}"):
-                        description = desc
+            st.caption(f"💡 常用描述: {', '.join(suggestions['descriptions'][:3])}")
 
         # Location selection
         st.caption("📍 地點資訊")
