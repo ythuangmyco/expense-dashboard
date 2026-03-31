@@ -46,9 +46,14 @@ def smart_suggestions(df: pd.DataFrame, category_type: str = None) -> Dict:
 
             # Most common amounts
             if 'amount' in filtered_df.columns:
-                amounts = filtered_df['amount'].value_counts().head(3)
+                # Ensure amounts are numeric
+                numeric_amounts = pd.to_numeric(filtered_df['amount'], errors='coerce').fillna(0)
+                amounts = numeric_amounts.value_counts().head(3)
                 suggestions["amounts"] = amounts.index.tolist()
-                suggestions["avg_amount"] = int(filtered_df['amount'].mean())
+                try:
+                    suggestions["avg_amount"] = int(numeric_amounts.mean()) if numeric_amounts.mean() > 0 else 0
+                except:
+                    suggestions["avg_amount"] = 0
 
             # Most common accounts
             if 'account' in filtered_df.columns:
@@ -128,7 +133,17 @@ def expense_input_form(df: pd.DataFrame) -> bool:
 
         # Show amount suggestions as text only
         if suggestions["amounts"]:
-            st.caption(f"💡 常用金額: {', '.join([f'NT${int(amt)}' for amt in suggestions['amounts'][:3]])}")
+            try:
+                # Safely convert amounts to integers
+                safe_amounts = []
+                for amt in suggestions['amounts'][:3]:
+                    try:
+                        safe_amounts.append(f'NT${int(float(amt))}')
+                    except:
+                        safe_amounts.append(f'NT${amt}')
+                st.caption(f"💡 常用金額: {', '.join(safe_amounts)}")
+            except Exception as e:
+                st.caption("💡 常用金額建議暫時無法顯示")
 
         # Description input
         description = st.text_input(

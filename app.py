@@ -226,18 +226,22 @@ def show_summary_metrics(df: pd.DataFrame, start_date=None, end_date=None, origi
         if original_df is not None and start_date and end_date and len(original_df) > len(df):
             comp_start, comp_end, comp_df = get_comparison_period(start_date, end_date, original_df)
             if not comp_df.empty:
-                comp_total = comp_df['amount'].sum()
+                # Ensure comparison amounts are numeric
+                if 'amount' in comp_df.columns:
+                    comp_df['amount'] = pd.to_numeric(comp_df['amount'], errors='coerce').fillna(0)
+
+                comp_total = float(comp_df['amount'].sum())
                 comp_transactions = len(comp_df)
-                comp_avg = comp_total / comp_transactions if comp_transactions > 0 else 0
-                comp_daily = comp_total / ((comp_end - comp_start).days + 1) if comp_start and comp_end else 0
+                comp_avg = float(comp_total / comp_transactions) if comp_transactions > 0 else 0.0
+                comp_daily = float(comp_total / ((comp_end - comp_start).days + 1)) if comp_start and comp_end else 0.0
 
                 # Calculate changes
                 comp_metrics = {
-                    'total_change': total_amount - comp_total,
-                    'total_change_pct': ((total_amount - comp_total) / comp_total * 100) if comp_total > 0 else 0,
-                    'transactions_change': total_transactions - comp_transactions,
-                    'avg_change': avg_transaction - comp_avg,
-                    'daily_change': daily_avg - comp_daily
+                    'total_change': float(total_amount - comp_total),
+                    'total_change_pct': float(((total_amount - comp_total) / comp_total * 100)) if comp_total > 0 else 0.0,
+                    'transactions_change': int(total_transactions - comp_transactions),
+                    'avg_change': float(avg_transaction - comp_avg),
+                    'daily_change': float(daily_avg - comp_daily)
                 }
 
     except Exception as e:
@@ -393,7 +397,8 @@ def show_visualizations(df: pd.DataFrame):
             st.caption("支出分類排行")
             try:
                 # Ensure values are numeric for calculations
-                category_values = pd.to_numeric(category_spending.values, errors='coerce').fillna(0)
+                category_values = pd.to_numeric(category_spending.values, errors='coerce')
+                category_values = pd.Series(category_values).fillna(0)  # Convert to Series first
                 category_total = float(category_values.sum())
 
                 if category_total > 0:

@@ -571,7 +571,7 @@ class SheetsAPI:
                 logger.info(f"💰 Cleaning amount data format...")
 
                 def clean_amount(value):
-                    """Clean amount values to handle various formats"""
+                    """Clean amount values to handle various formats including multiple values per cell"""
                     try:
                         if pd.isna(value) or value == '' or value is None:
                             return None
@@ -585,26 +585,53 @@ class SheetsAPI:
                         except:
                             pass
 
-                        # Remove common formatting
+                        # Handle multiple values in one cell (take the largest one)
+                        # Split on comma and prime characters: "240.00′,′26,495.00" → ["240.00", "26495.00"]
+                        if ',' in str_val:
+                            parts = str_val.split(',')
+                            amounts = []
+                            for part in parts:
+                                cleaned_part = clean_single_amount(part.strip())
+                                if cleaned_part is not None:
+                                    amounts.append(cleaned_part)
+
+                            # Return the largest amount if multiple found
+                            if amounts:
+                                return max(amounts)
+                            else:
+                                return None
+                        else:
+                            return clean_single_amount(str_val)
+
+                    except Exception as e:
+                        logger.warning(f"Could not clean amount value '{value}': {e}")
+                        return None
+
+                def clean_single_amount(str_val):
+                    """Clean a single amount value"""
+                    try:
+                        # Remove all formatting characters
                         str_val = str_val.replace(',', '')  # Remove commas: "1,234" → "1234"
                         str_val = str_val.replace('NT$', '')  # Remove currency: "NT$1234" → "1234"
                         str_val = str_val.replace('$', '')  # Remove dollar signs
                         str_val = str_val.replace(' ', '')  # Remove spaces
                         str_val = str_val.replace('台幣', '')  # Remove currency text
                         str_val = str_val.replace('元', '')  # Remove currency unit
+                        str_val = str_val.replace('′', '')  # Remove prime character: "240.00′" → "240.00"
+                        str_val = str_val.replace(''', '')  # Remove smart quote
+                        str_val = str_val.replace('"', '')  # Remove regular quote
 
                         # Handle negative values in parentheses: "(1234)" → "-1234"
                         if str_val.startswith('(') and str_val.endswith(')'):
                             str_val = '-' + str_val[1:-1]
 
                         # Final conversion attempt
-                        if str_val:
+                        if str_val and str_val not in ['', '0', '0.0', '0.00']:
                             return float(str_val)
                         else:
                             return None
 
-                    except Exception as e:
-                        logger.warning(f"Could not clean amount value '{value}': {e}")
+                    except:
                         return None
 
                 # Apply cleaning function
