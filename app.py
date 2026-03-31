@@ -310,8 +310,8 @@ def show_summary_metrics(df: pd.DataFrame, start_date=None, end_date=None, origi
                 st.caption(f"📊 統計期間: {days} 天")
 
 
-def show_recent_transactions(df: pd.DataFrame, limit: int = 10):
-    """Display recent transactions"""
+def show_recent_transactions(df: pd.DataFrame, limit: int = 15):
+    """Display recent transactions with improved styling"""
     if df.empty:
         return
 
@@ -327,36 +327,50 @@ def show_recent_transactions(df: pd.DataFrame, limit: int = 10):
         # Sort by date and get recent transactions
         recent_df = df.sort_values('date', ascending=False).head(limit)
 
-        # Create display DataFrame
+        # Create display DataFrame with better formatting
         display_df = recent_df.copy()
-        display_df['日期'] = display_df['date'].dt.strftime('%m/%d')
+        display_df['📅 日期'] = display_df['date'].dt.strftime('%m/%d')
 
         # Handle category display - check what columns exist
         if 'category_type' in display_df.columns:
-            display_df['分類'] = display_df['category_type']
+            display_df['🏷️ 分類'] = display_df['category_type']
         else:
-            display_df['分類'] = '未分類'
+            display_df['🏷️ 分類'] = '未分類'
 
-        display_df['金額'] = display_df['amount'].apply(lambda x: f"NT${x:,.0f}")
+        # Safe amount formatting
+        def safe_amount_format(x):
+            try:
+                return f"NT${float(x):,.0f}"
+            except:
+                return "NT$0"
+
+        display_df['💰 金額'] = display_df['amount'].apply(safe_amount_format)
 
         # Create columns list based on what's available
-        display_cols = ['日期', '分類', '金額']
-        rename_dict = {}
+        display_cols = ['📅 日期', '🏷️ 分類']
 
         if 'description' in display_df.columns:
-            display_cols.insert(-1, 'description')
-            rename_dict['description'] = '描述'
+            display_df['📝 描述'] = display_df['description'].fillna('')
+            display_cols.append('📝 描述')
+
+        display_cols.append('💰 金額')
 
         if 'account' in display_df.columns:
-            display_cols.append('account')
-            rename_dict['account'] = '帳戶'
+            display_df['👤 帳戶'] = display_df['account'].fillna('')
+            display_cols.append('👤 帳戶')
 
-        # Display as table
+        # Display as styled table
         st.dataframe(
-            display_df[display_cols].rename(columns=rename_dict),
+            display_df[display_cols],
             use_container_width=True,
-            hide_index=True
+            hide_index=True,
+            height=400
         )
+
+        # Show summary info
+        total_shown = len(recent_df)
+        total_amount = recent_df['amount'].sum()
+        st.caption(f"📊 顯示最近 {total_shown} 筆交易，總額 NT${total_amount:,.0f}")
 
     except Exception as e:
         st.error(f"最近交易顯示錯誤: {str(e)}")
@@ -376,12 +390,13 @@ def show_visualizations(df: pd.DataFrame):
 
     st.subheader("📊 支出分析")
 
-    # Chart tabs
-    chart_tab1, chart_tab2, chart_tab3 = st.tabs(["💰 分類分析", "📅 時間趨勢", "👤 帳戶分布"])
+    # Category Analysis Section
+    if 'category_type' in df.columns:
+        st.markdown("### 💰 支出分類分析")
 
-    with chart_tab1:
-        # Category analysis
-        if 'category_type' in df.columns:
+        col1, col2 = st.columns([1, 1])
+
+        with col1:
             category_spending = df.groupby('category_type')['amount'].sum().sort_values(ascending=False)
 
             fig = px.pie(
@@ -390,11 +405,16 @@ def show_visualizations(df: pd.DataFrame):
                 title="支出分類佔比",
                 color_discrete_sequence=px.colors.qualitative.Set3
             )
-            fig.update_layout(showlegend=True, height=400)
+            fig.update_layout(
+                showlegend=True,
+                height=450,
+                title_font_size=16,
+                font=dict(size=12)
+            )
             st.plotly_chart(fig, use_container_width=True)
 
-            # Top categories table
-            st.caption("支出分類排行")
+        with col2:
+            st.markdown("**📋 分類排行榜**")
             try:
                 # Ensure values are numeric for calculations
                 category_values = pd.to_numeric(category_spending.values, errors='coerce')
@@ -407,35 +427,51 @@ def show_visualizations(df: pd.DataFrame):
                     percentages = pd.Series([0.0] * len(category_values))
 
                 category_df = pd.DataFrame({
-                    '分類': category_spending.index,
-                    '金額': category_values,
-                    '佔比': percentages
+                    '🏷️ 分類': category_spending.index,
+                    '💰 金額': category_values,
+                    '📊 佔比': percentages
                 })
-                category_df['金額'] = category_df['金額'].apply(lambda x: f"NT${float(x):,.0f}")
-                category_df['佔比'] = category_df['佔比'].apply(lambda x: f"{float(x)}%")
-                st.dataframe(category_df, hide_index=True, use_container_width=True)
+                category_df['💰 金額'] = category_df['💰 金額'].apply(lambda x: f"NT${float(x):,.0f}")
+                category_df['📊 佔比'] = category_df['📊 佔比'].apply(lambda x: f"{float(x):,.1f}%")
+
+                st.dataframe(
+                    category_df,
+                    hide_index=True,
+                    use_container_width=True,
+                    height=350
+                )
             except Exception as e:
                 st.error(f"分類統計計算錯誤: {str(e)}")
-                st.dataframe(pd.DataFrame({
-                    '分類': category_spending.index,
-                    '金額': category_spending.values
-                }), hide_index=True, use_container_width=True)
 
-    with chart_tab2:
-        # Time trends
-        if 'date' in df.columns:
-            # Monthly spending trend
-            monthly_spending = df.groupby(df['date'].dt.to_period('M'))['amount'].sum()
+    st.markdown("---")
 
-            fig = px.line(
-                x=monthly_spending.index.astype(str),
-                y=monthly_spending.values,
-                title="月度支出趨勢",
-                labels={'x': '月份', 'y': '金額 (NT$)'}
-            )
-            fig.update_layout(showlegend=False, height=400)
-            st.plotly_chart(fig, use_container_width=True)
+    # Time Trends Section
+    if 'date' in df.columns:
+        st.markdown("### 📅 時間趨勢分析")
 
+        # Monthly spending trend
+        monthly_spending = df.groupby(df['date'].dt.to_period('M'))['amount'].sum()
+
+        fig = px.line(
+            x=monthly_spending.index.astype(str),
+            y=monthly_spending.values,
+            title="📈 月度支出趨勢",
+            labels={'x': '月份', 'y': '金額 (NT$)'},
+            markers=True
+        )
+        fig.update_layout(
+            showlegend=False,
+            height=400,
+            title_font_size=16,
+            xaxis_title="月份",
+            yaxis_title="支出金額 (NT$)"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Weekly and Account Analysis
+        col1, col2 = st.columns([1, 1])
+
+        with col1:
             # Weekly pattern
             df['weekday'] = df['date'].dt.day_name()
             weekday_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
@@ -444,25 +480,35 @@ def show_visualizations(df: pd.DataFrame):
             fig = px.bar(
                 x=['週一', '週二', '週三', '週四', '週五', '週六', '週日'],
                 y=weekday_spending.values,
-                title="週間消費模式 (平均)",
-                labels={'x': '星期', 'y': '平均金額 (NT$)'}
+                title="📊 週間消費模式",
+                labels={'x': '星期', 'y': '平均金額 (NT$)'},
+                color_discrete_sequence=['#FF6B6B']
             )
-            fig.update_layout(showlegend=False, height=300)
+            fig.update_layout(
+                showlegend=False,
+                height=350,
+                title_font_size=14
+            )
             st.plotly_chart(fig, use_container_width=True)
 
-    with chart_tab3:
-        # Account distribution
-        if 'account' in df.columns:
-            account_spending = df.groupby('account')['amount'].sum()
+        with col2:
+            # Account distribution
+            if 'account' in df.columns:
+                account_spending = df.groupby('account')['amount'].sum()
 
-            fig = px.bar(
-                x=account_spending.index,
-                y=account_spending.values,
-                title="帳戶支出分布",
-                labels={'x': '帳戶', 'y': '總金額 (NT$)'}
-            )
-            fig.update_layout(showlegend=False, height=400)
-            st.plotly_chart(fig, use_container_width=True)
+                fig = px.bar(
+                    x=account_spending.index,
+                    y=account_spending.values,
+                    title="👤 帳戶支出分布",
+                    labels={'x': '帳戶', 'y': '總金額 (NT$)'},
+                    color_discrete_sequence=['#4ECDC4']
+                )
+                fig.update_layout(
+                    showlegend=False,
+                    height=350,
+                    title_font_size=14
+                )
+                st.plotly_chart(fig, use_container_width=True)
 
 
 def get_period_dates(period_type, df):
@@ -699,14 +745,13 @@ def main_dashboard():
 
     st.divider()
 
-    # Two column layout for desktop, single column for mobile
-    col1, col2 = st.columns([2, 1])
+    # Show recent transactions first
+    show_recent_transactions(filtered_df)
 
-    with col1:
-        show_visualizations(filtered_df)
+    st.divider()
 
-    with col2:
-        show_recent_transactions(filtered_df)
+    # Then show visualizations
+    show_visualizations(filtered_df)
 
 
 def add_expense_page():
@@ -746,17 +791,17 @@ def main():
     # Show API status
     show_api_status()
 
-    # Main navigation tabs (mobile-first order)
-    tab1, tab2, tab3 = st.tabs(["📊 總覽", "➕ 新增", "✏️ 編輯"])
+    # Main navigation tabs (updated order)
+    tab1, tab2, tab3 = st.tabs(["➕ 新增", "✏️ 編輯", "📊 總覽"])
 
     with tab1:
-        main_dashboard()
-
-    with tab2:
         add_expense_page()
 
-    with tab3:
+    with tab2:
         edit_expense_page()
+
+    with tab3:
+        main_dashboard()
 
     # Auth sidebar
     auth_sidebar()

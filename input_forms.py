@@ -122,12 +122,12 @@ def expense_input_form(df: pd.DataFrame) -> bool:
         # Get smart suggestions for this category
         suggestions = smart_suggestions(df, category_type)
 
-        # Amount input (suggestions removed to fix form issues)
+        # Amount input (no default value)
         amount = st.number_input(
             "金額 💰",
             min_value=0,
             step=10,
-            value=suggestions.get("avg_amount", 0),
+            value=0,
             help="支出金額"
         )
 
