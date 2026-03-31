@@ -1,6 +1,7 @@
 """
 📊 Personal Expense Dashboard
 Real-time visualization of expense tracker data from Google Sheets
+Mobile-first design with progressive enhancement
 """
 
 import streamlit as st
@@ -8,415 +9,380 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import requests
 from datetime import datetime, timedelta
 import numpy as np
-from sheets_api import get_sheets_api
+
+# Import our modules
+from config import PAGE_CONFIG, COLORS
+from auth import check_password, password_screen, auth_sidebar, init_session_state
+from sheets_api import load_expense_data, get_sheets_api, refresh_data
 from input_forms import quick_entry_section, expense_input_form, edit_expense_form
 
 # Page configuration
-st.set_page_config(
-    page_title="💰 HuangLiuHome Expense",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(**PAGE_CONFIG)
 
-# Authentication
-def check_password():
-    """Returns True if the user had the correct password."""
+# Initialize session state
+init_session_state()
 
-    def password_entered():
-        """Checks whether a password entered by the user is correct."""
-        if st.session_state["password"] == "0727":
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Don't store password
-        else:
-            st.session_state["password_correct"] = False
-
-    if "password_correct" not in st.session_state:
-        # First run, show input for password.
-        st.markdown("""
-        <div style="display: flex; justify-content: center; align-items: center; height: 50vh;">
-            <div style="text-align: center; padding: 2rem; background: white; border-radius: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
-                <h1 style="color: #667eea; margin-bottom: 1rem;">🔒 HuangLiuHome Expense</h1>
-                <p style="color: #666; margin-bottom: 1.5rem;">Enter password to access your expense data</p>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        col1, col2, col3 = st.columns([1, 1, 1])
-        with col2:
-            st.text_input("Password", type="password", on_change=password_entered, key="password",
-                         placeholder="Enter your 4-digit code")
-        return False
-    elif not st.session_state["password_correct"]:
-        # Password not correct, show input + error.
-        st.markdown("""
-        <div style="display: flex; justify-content: center; align-items: center; height: 50vh;">
-            <div style="text-align: center; padding: 2rem; background: white; border-radius: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
-                <h1 style="color: #667eea; margin-bottom: 1rem;">🔒 HuangLiuHome Expense</h1>
-                <p style="color: #666; margin-bottom: 1.5rem;">Enter password to access your expense data</p>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        col1, col2, col3 = st.columns([1, 1, 1])
-        with col2:
-            st.text_input("Password", type="password", on_change=password_entered, key="password",
-                         placeholder="Enter your 4-digit code")
-            st.error("❌ Incorrect password. Please try again.")
-        return False
-    else:
-        # Password correct.
-        return True
-
-# Custom CSS for mobile-friendly design
+# Custom CSS for mobile-first design
 st.markdown("""
 <style>
+    /* Mobile-first responsive design */
     .main-header {
         text-align: center;
         padding: 1rem 0;
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-        border-radius: 10px;
+        background: linear-gradient(90deg, #FF6B6B, #4ECDC4);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-size: 2rem;
+        font-weight: bold;
         margin-bottom: 2rem;
-        color: white;
     }
 
     .metric-card {
         background: white;
         padding: 1rem;
-        border-radius: 10px;
+        border-radius: 0.5rem;
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         text-align: center;
-        margin-bottom: 1rem;
     }
 
-    .category-emoji {
-        font-size: 2rem;
-        margin-right: 0.5rem;
+    .quick-entry-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 0.5rem;
+        margin: 1rem 0;
     }
 
-    /* Mobile responsiveness */
+    /* Improve mobile button sizing */
+    .stButton > button {
+        width: 100%;
+        height: 3rem;
+        font-size: 0.9rem;
+    }
+
+    /* Better mobile form layouts */
+    .stSelectbox > div > div > div {
+        font-size: 0.9rem;
+    }
+
+    /* Hide unnecessary streamlit elements for cleaner mobile view */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    .stDeployButton {display: none;}
+
     @media (max-width: 768px) {
-        .main-header h1 {
-            font-size: 1.5rem !important;
+        .main-header {
+            font-size: 1.5rem;
         }
 
-        .metric-card {
-            padding: 0.5rem;
+        .block-container {
+            padding-top: 1rem;
+            padding-left: 1rem;
+            padding-right: 1rem;
         }
     }
 </style>
 """, unsafe_allow_html=True)
 
-# Constants
-SHEET_URL = "https://docs.google.com/spreadsheets/d/16JzKmS8Jq9H6NmjrpKkqBqNfnXkC_gfPiMV6Y6qP_kQ/export?format=csv&gid=453361449"
 
-# Cache data loading function
-@st.cache_data(ttl=60)  # Cache for 1 minute (shorter for real-time updates)
-def load_expense_data():
-    """Load expense data from Google Sheets (API or CSV fallback)"""
+def show_header():
+    """Display app header with branding"""
+    st.markdown('<div class="main-header">💰 HuangLiu Family Expense</div>', unsafe_allow_html=True)
 
-    # Try Google Sheets API first (for read/write capabilities)
-    try:
-        sheets_api = get_sheets_api()
-        if sheets_api.authenticate():
-            df = sheets_api.read_data()
-            if not df.empty:
-                st.session_state['api_available'] = True
-                return df
-    except Exception as e:
-        st.session_state['api_available'] = False
-        # Fall back to CSV if API fails
 
-    # Fallback to CSV export (read-only)
-    try:
-        st.session_state['api_available'] = False
-        df = pd.read_csv(SHEET_URL)
+def show_api_status():
+    """Show API connection status"""
+    api = get_sheets_api()
+    status = api.get_status()
 
-        # Clean column names (remove extra spaces, standardize)
-        df.columns = df.columns.str.strip()
-
-        # Rename columns for easier handling - NEW plain text sheet structure
-        column_mapping = {
-            '日期': 'date',
-            '類型_1': 'category_emoji',
-            '類型_2': 'category_type',
-            '金額': 'amount',
-            '帳戶': 'account',
-            '名稱': 'description',
-            '國家': 'country',
-            '地點': 'location',
-            '備註': 'notes'
-        }
-
-        df = df.rename(columns=column_mapping)
-
-        # Convert date column
-        df['date'] = pd.to_datetime(df['date'], errors='coerce')
-
-        # Convert amount to numeric (remove any currency symbols)
-        df['amount'] = pd.to_numeric(df['amount'], errors='coerce')
-
-        # Remove rows with invalid dates or amounts
-        df = df.dropna(subset=['date', 'amount'])
-
-        # Add derived columns
-        if not df.empty:
-            df['year'] = df['date'].dt.year
-            df['month'] = df['date'].dt.month
-            df['day_of_week'] = df['date'].dt.day_name()
-            df['month_year'] = df['date'].dt.to_period('M').astype(str)
-
-        return df
-
-    except Exception as e:
-        st.error(f"Error loading data: {str(e)}")
-        return pd.DataFrame()
-
-def main():
-    """Main dashboard function"""
-
-    # Header
-    st.markdown("""
-    <div class="main-header">
-        <h1>📊 HuangLiuHome Expense</h1>
-        <p>Real-time expense tracking and insights</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # Load data
-    with st.spinner("Loading expense data..."):
-        df = load_expense_data()
-
-    # Show API status with more details
-    api_status = st.session_state.get('api_available', False)
-    if api_status:
-        st.success("🔗 Google Sheets API 已連接 - 可新增/編輯記錄")
+    if status["api_available"]:
+        st.success("🟢 連線正常 - 即時同步")
     else:
-        # More helpful error message
-        if "google_sheets" in st.secrets:
-            st.error("🔧 API 認證失敗 - 請檢查 Streamlit Cloud 的 Secrets 設定")
-            with st.expander("🛠️ 快速修復"):
-                st.markdown("""
-                **可能的問題：**
-                1. Secrets 格式錯誤
-                2. Service Account 權限不足
-                3. Google Sheet 未正確分享
+        st.warning("🟡 唯讀模式 - 使用 CSV 資料")
+        if st.button("🔄 重新連接"):
+            refresh_data()
+            st.rerun()
 
-                **修復步驟：**
-                1. 檢查 Streamlit Cloud → Settings → Secrets
-                2. 確認所有必要欄位都存在
-                3. 檢查 Google Sheet 是否分享給 service account
-                """)
-        else:
-            st.warning("📖 僅讀取模式 - 查看 GOOGLE_API_SETUP.md 啟用完整功能")
 
-    # Navigation tabs - Reordered: 新增支出, 編輯支出, 報表分析
-    tab1, tab2, tab3 = st.tabs(["➕ 新增支出", "✏️ 編輯支出", "📊 報表分析"])
+def show_summary_metrics(df: pd.DataFrame):
+    """Display key metrics in mobile-friendly layout"""
+    if df.empty:
+        st.info("📊 尚無支出資料")
+        return
 
-    with tab1:
-        # Quick entry section and expense form
-        if api_status:
-            if quick_entry_section():
-                st.rerun()  # Refresh to show updated quick entry form
+    st.subheader("📈 本月概況")
 
-            st.divider()
+    # Calculate metrics
+    current_month = datetime.now().month
+    current_year = datetime.now().year
 
-            # Full expense form
-            if expense_input_form(df):
-                st.rerun()  # Refresh to show new data
-        else:
-            st.info("🔑 請先設定 Google Sheets API 以啟用記錄功能")
-            st.markdown("""
-            **設定步驟:**
-            1. 查看 `GOOGLE_API_SETUP.md` 詳細說明
-            2. 設定 Google Service Account
-            3. 重新部署應用程式
-            """)
+    # Filter current month data
+    current_month_df = df[
+        (df['date'].dt.month == current_month) &
+        (df['date'].dt.year == current_year)
+    ]
 
-    with tab2:
-        # Edit expenses
-        if api_status:
-            if not df.empty:
-                edit_expense_form(df)
-            else:
-                st.info("沒有資料可編輯")
-        else:
-            st.info("🔑 請先設定 Google Sheets API 以啟用編輯功能")
+    # Calculate metrics
+    total_this_month = current_month_df['amount'].sum() if not current_month_df.empty else 0
+    total_transactions = len(current_month_df)
+    avg_transaction = total_this_month / total_transactions if total_transactions > 0 else 0
 
-    with tab3:
-        # Dashboard analytics
-        if df.empty:
-            st.error("No data available. Please check the Google Sheets connection.")
-            return
-        show_dashboard(df)
+    # Last month for comparison
+    last_month = current_month - 1 if current_month > 1 else 12
+    last_month_year = current_year if current_month > 1 else current_year - 1
 
-def show_dashboard(df):
-    """Show the dashboard analytics (original functionality)"""
+    last_month_df = df[
+        (df['date'].dt.month == last_month) &
+        (df['date'].dt.year == last_month_year)
+    ]
+    last_month_total = last_month_df['amount'].sum() if not last_month_df.empty else 0
 
-    # Sidebar filters
-    st.sidebar.header("📋 Filters")
-
-    # Date range filter
-    min_date = df['date'].min().date()
-    max_date = df['date'].max().date()
-
-    date_range = st.sidebar.date_input(
-        "Date Range",
-        value=(min_date, max_date),
-        min_value=min_date,
-        max_value=max_date
-    )
-
-    # Account filter
-    accounts = ['All'] + sorted(df['account'].dropna().unique().tolist())
-    selected_account = st.sidebar.selectbox("Account", accounts)
-
-    # Category filter
-    categories = ['All'] + sorted(df['category_emoji'].dropna().unique().tolist())
-    selected_category = st.sidebar.selectbox("Category", categories)
-
-    # Apply filters
-    filtered_df = df.copy()
-
-    # Date filter
-    if len(date_range) == 2:
-        start_date, end_date = date_range
-        filtered_df = filtered_df[
-            (filtered_df['date'].dt.date >= start_date) &
-            (filtered_df['date'].dt.date <= end_date)
-        ]
-
-    # Account filter
-    if selected_account != 'All':
-        filtered_df = filtered_df[filtered_df['account'] == selected_account]
-
-    # Category filter
-    if selected_category != 'All':
-        filtered_df = filtered_df[filtered_df['category_emoji'] == selected_category]
-
-    # Summary metrics
-    st.header("💰 Summary")
-
+    # Display metrics in columns
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        total_spent = filtered_df['amount'].sum()
         st.metric(
-            label="Total Spent",
-            value=f"NT$ {total_spent:,.0f}"
+            "本月總支出",
+            f"NT${total_this_month:,.0f}",
+            delta=f"NT${total_this_month - last_month_total:,.0f}" if last_month_total > 0 else None
         )
 
     with col2:
-        avg_transaction = filtered_df['amount'].mean()
         st.metric(
-            label="Avg Transaction",
-            value=f"NT$ {avg_transaction:,.0f}"
+            "交易次數",
+            f"{total_transactions:,}",
+            delta=f"{total_transactions - len(last_month_df)}" if not last_month_df.empty else None
         )
 
     with col3:
-        transaction_count = len(filtered_df)
         st.metric(
-            label="Transactions",
-            value=f"{transaction_count:,}"
+            "平均單筆",
+            f"NT${avg_transaction:,.0f}"
         )
 
     with col4:
-        if len(filtered_df) > 0:
-            days_span = (filtered_df['date'].max() - filtered_df['date'].min()).days + 1
-            daily_avg = total_spent / max(days_span, 1)
-            st.metric(
-                label="Daily Average",
-                value=f"NT$ {daily_avg:,.0f}"
+        # Most frequent category this month
+        if not current_month_df.empty and 'category_type' in current_month_df.columns:
+            top_category = current_month_df['category_type'].value_counts().index[0]
+            st.metric("主要支出", top_category)
+        else:
+            st.metric("主要支出", "無資料")
+
+
+def show_recent_transactions(df: pd.DataFrame, limit: int = 10):
+    """Display recent transactions"""
+    if df.empty:
+        return
+
+    st.subheader("📋 最近交易")
+
+    # Sort by date and get recent transactions
+    recent_df = df.sort_values('date', ascending=False).head(limit)
+
+    # Create display DataFrame
+    display_df = recent_df.copy()
+    display_df['日期'] = display_df['date'].dt.strftime('%m/%d')
+    display_df['分類'] = display_df.get('category_emoji', '') + ' ' + display_df.get('category_type', '')
+    display_df['金額'] = display_df['amount'].apply(lambda x: f"NT${x:,.0f}")
+
+    # Display as table
+    st.dataframe(
+        display_df[['日期', '分類', 'description', '金額', 'account']].rename(columns={
+            'description': '描述',
+            'account': '帳戶'
+        }),
+        use_container_width=True,
+        hide_index=True
+    )
+
+
+def show_visualizations(df: pd.DataFrame):
+    """Display interactive charts"""
+    if df.empty:
+        st.info("📊 需要更多資料才能顯示圖表")
+        return
+
+    st.subheader("📊 支出分析")
+
+    # Chart tabs
+    chart_tab1, chart_tab2, chart_tab3 = st.tabs(["💰 分類分析", "📅 時間趨勢", "👤 帳戶分布"])
+
+    with chart_tab1:
+        # Category analysis
+        if 'category_type' in df.columns:
+            category_spending = df.groupby('category_type')['amount'].sum().sort_values(ascending=False)
+
+            fig = px.pie(
+                values=category_spending.values,
+                names=category_spending.index,
+                title="支出分類佔比",
+                color_discrete_sequence=px.colors.qualitative.Set3
             )
+            fig.update_layout(showlegend=True, height=400)
+            st.plotly_chart(fig, use_container_width=True)
 
-    # Recent transactions (moved to follow Summary)
-    if len(filtered_df) > 0:
-        st.header("📝 Recent Transactions")
+            # Top categories table
+            st.caption("支出分類排行")
+            category_df = pd.DataFrame({
+                '分類': category_spending.index,
+                '金額': category_spending.values,
+                '佔比': (category_spending.values / category_spending.sum() * 100).round(1)
+            })
+            category_df['金額'] = category_df['金額'].apply(lambda x: f"NT${x:,.0f}")
+            category_df['佔比'] = category_df['佔比'].apply(lambda x: f"{x}%")
+            st.dataframe(category_df, hide_index=True, use_container_width=True)
 
-        # Show last 20 transactions
-        recent_df = filtered_df.nlargest(20, 'date')[['date', 'category_emoji', 'category_type', 'amount', 'account', 'description', 'location']]
-        recent_df['date'] = recent_df['date'].dt.strftime('%Y-%m-%d')
-        recent_df['amount'] = recent_df['amount'].apply(lambda x: f"NT$ {x:,.0f}")
+    with chart_tab2:
+        # Time trends
+        if 'date' in df.columns:
+            # Monthly spending trend
+            monthly_spending = df.groupby(df['date'].dt.to_period('M'))['amount'].sum()
 
-        st.dataframe(
-            recent_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "date": "Date",
-                "category_emoji": "Category",
-                "category_type": "Type",
-                "amount": "Amount",
-                "account": "Account",
-                "description": "Description",
-                "location": "Location"
-            }
-        )
+            fig = px.line(
+                x=monthly_spending.index.astype(str),
+                y=monthly_spending.values,
+                title="月度支出趨勢",
+                labels={'x': '月份', 'y': '金額 (NT$)'}
+            )
+            fig.update_layout(showlegend=False, height=400)
+            st.plotly_chart(fig, use_container_width=True)
 
-    # Main visualizations
-    if len(filtered_df) > 0:
-        show_visualizations(filtered_df)
-    else:
-        st.info("No data matches the selected filters.")
+            # Weekly pattern
+            df['weekday'] = df['date'].dt.day_name()
+            weekday_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+            weekday_spending = df.groupby('weekday')['amount'].mean().reindex(weekday_order)
 
-def show_visualizations(df):
-    """Display main visualizations"""
+            fig = px.bar(
+                x=['週一', '週二', '週三', '週四', '週五', '週六', '週日'],
+                y=weekday_spending.values,
+                title="週間消費模式 (平均)",
+                labels={'x': '星期', 'y': '平均金額 (NT$)'}
+            )
+            fig.update_layout(showlegend=False, height=300)
+            st.plotly_chart(fig, use_container_width=True)
 
-    # Monthly spending trend
-    st.header("📈 Monthly Spending Trends")
+    with chart_tab3:
+        # Account distribution
+        if 'account' in df.columns:
+            account_spending = df.groupby('account')['amount'].sum()
 
-    monthly_spending = df.groupby('month_year')['amount'].sum().reset_index()
-    monthly_spending['month_year'] = pd.to_datetime(monthly_spending['month_year'])
+            fig = px.bar(
+                x=account_spending.index,
+                y=account_spending.values,
+                title="帳戶支出分布",
+                labels={'x': '帳戶', 'y': '總金額 (NT$)'}
+            )
+            fig.update_layout(showlegend=False, height=400)
+            st.plotly_chart(fig, use_container_width=True)
 
-    fig_monthly = px.line(
-        monthly_spending,
-        x='month_year',
-        y='amount',
-        title='Monthly Spending Over Time',
-        markers=True
-    )
-    fig_monthly.update_layout(
-        xaxis_title="Month",
-        yaxis_title="Amount (NT$)",
-        hovermode='x unified'
-    )
 
-    st.plotly_chart(fig_monthly, use_container_width=True)
+def main_dashboard():
+    """Main dashboard page"""
+    st.title("📊 支出總覽")
 
-    # Category breakdown
-    col1, col2 = st.columns(2)
+    # Load data
+    with st.spinner("📊 載入資料中..."):
+        df = load_expense_data()
+
+    if df.empty:
+        st.warning("📊 目前沒有支出資料")
+        st.info("💡 請使用「新增支出」頁面開始記錄您的支出")
+        return
+
+    # Show summary metrics
+    show_summary_metrics(df)
+
+    st.divider()
+
+    # Two column layout for desktop, single column for mobile
+    col1, col2 = st.columns([2, 1])
 
     with col1:
-        st.subheader("🏷️ Spending by Category")
-        category_spending = df.groupby('category_emoji')['amount'].sum().sort_values(ascending=False)
-
-        fig_pie = px.pie(
-            values=category_spending.values,
-            names=category_spending.index,
-            title='Category Distribution'
-        )
-        st.plotly_chart(fig_pie, use_container_width=True)
+        show_visualizations(df)
 
     with col2:
-        st.subheader("👥 Spending by Account")
-        account_spending = df.groupby('account')['amount'].sum().sort_values(ascending=False)
+        show_recent_transactions(df)
 
-        fig_bar = px.bar(
-            x=account_spending.values,
-            y=account_spending.index,
-            orientation='h',
-            title='Account Comparison'
-        )
-        fig_bar.update_layout(
-            xaxis_title="Amount (NT$)",
-            yaxis_title="Account"
-        )
-        st.plotly_chart(fig_bar, use_container_width=True)
+
+def add_expense_page():
+    """Add new expense page"""
+    st.title("➕ 新增支出")
+
+    # Load current data for smart suggestions
+    with st.spinner("📊 載入資料中..."):
+        df = load_expense_data()
+
+    # Quick entry section
+    quick_expense = quick_entry_section(df)
+    if quick_expense:
+        # Quick entry was selected, add it
+        api = get_sheets_api()
+        success = api.add_expense(quick_expense)
+        if success:
+            st.success(f"✅ 快速新增: {quick_expense['description']} - NT${quick_expense['amount']:,.0f}")
+            # Refresh data
+            st.cache_data.clear()
+        else:
+            st.error("❌ 新增失敗")
+
+    st.divider()
+
+    # Detailed form
+    expense_input_form(df)
+
+
+def edit_expense_page():
+    """Edit expenses page"""
+    st.title("✏️ 編輯支出")
+
+    # Load data
+    with st.spinner("📊 載入資料中..."):
+        df = load_expense_data()
+
+    # Edit form
+    edit_expense_form(df)
+
+
+def main():
+    """Main application"""
+    # Authentication check
+    if not check_password():
+        password_screen()
+        return
+
+    # Show header
+    show_header()
+
+    # Show API status
+    show_api_status()
+
+    # Main navigation tabs (mobile-first order)
+    tab1, tab2, tab3 = st.tabs(["📊 總覽", "➕ 新增", "✏️ 編輯"])
+
+    with tab1:
+        main_dashboard()
+
+    with tab2:
+        add_expense_page()
+
+    with tab3:
+        edit_expense_page()
+
+    # Auth sidebar
+    auth_sidebar()
+
+    # Footer
+    with st.sidebar:
+        st.divider()
+        st.caption("💡 家庭支出追蹤系統")
+        st.caption("🏠 HuangLiu Family")
+
+        # Data refresh button
+        if st.button("🔄 重新整理資料"):
+            refresh_data()
+            st.success("✅ 資料已重新整理")
 
 
 if __name__ == "__main__":
-    if check_password():
-        main()
+    main()

@@ -29,3 +29,8 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Virtual Environment
+expense_env/
+venv/
+env/

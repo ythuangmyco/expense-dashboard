@@ -1,192 +1,207 @@
 """
-Google Sheets API Integration
-Handles read/write operations for expense data
+Google Sheets API integration with progressive fallback
+Handles data reading, writing, and fallback to CSV export
 """
 
 import streamlit as st
+import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
-import pandas as pd
-import json
+import requests
 from datetime import datetime
-import time
+import logging
+from typing import Optional, Dict, List, Union
+from config import SHEET_ID, WORKSHEET_GID, SHEET_URL, COLUMN_MAPPING
 
-# Define the scope
-SCOPES = [
-    'https://www.googleapis.com/auth/spreadsheets',
-    'https://www.googleapis.com/auth/drive'
-]
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Your Google Sheet details
-SHEET_ID = "16JzKmS8Jq9H6NmjrpKkqBqNfnXkC_gfPiMV6Y6qP_kQ"
-WORKSHEET_GID = 453361449  # Fresh plain text sheet
 
 class SheetsAPI:
+    """
+    Google Sheets API client with fallback capabilities
+    """
+
     def __init__(self):
-        self.gc = None
-        self.sheet = None
+        self.client = None
         self.worksheet = None
+        self.api_available = False
+        self._initialize_api()
 
-    def authenticate(self):
-        """Authenticate with Google Sheets API with better error handling"""
+    def _initialize_api(self):
+        """
+        Initialize Google Sheets API with service account credentials
+        Falls back gracefully if credentials are not available
+        """
         try:
-            credentials = None
-
-            # Try Streamlit secrets first (for deployment)
+            # Try to get credentials from Streamlit secrets
             if "google_sheets" in st.secrets:
-                try:
-                    credentials_dict = dict(st.secrets["google_sheets"])
+                credentials = Credentials.from_service_account_info(
+                    st.secrets["google_sheets"],
+                    scopes=[
+                        "https://www.googleapis.com/auth/spreadsheets",
+                        "https://www.googleapis.com/auth/drive.readonly"
+                    ]
+                )
+                self.client = gspread.authorize(credentials)
 
-                    # Validate required fields
-                    required_fields = ['type', 'project_id', 'private_key', 'client_email', 'token_uri']
-                    missing_fields = [field for field in required_fields if field not in credentials_dict]
+                # Get sheet ID from secrets if available
+                sheet_id = st.secrets.get("app", {}).get("sheet_id", SHEET_ID)
 
-                    if missing_fields:
-                        st.error(f"Missing required fields in secrets: {missing_fields}")
-                        return False
+                # Open the spreadsheet and worksheet
+                spreadsheet = self.client.open_by_key(sheet_id)
 
-                    credentials = Credentials.from_service_account_info(
-                        credentials_dict, scopes=SCOPES
-                    )
+                # Find worksheet by GID
+                self.worksheet = None
+                for ws in spreadsheet.worksheets():
+                    if str(ws.id) == str(WORKSHEET_GID):
+                        self.worksheet = ws
+                        break
 
-                except Exception as e:
-                    st.error(f"Secrets format error: {str(e)}")
-                    # Try local file as fallback
+                if self.worksheet:
+                    self.api_available = True
+                    logger.info("✅ Google Sheets API initialized successfully")
+                else:
+                    logger.warning(f"⚠️ Worksheet with GID {WORKSHEET_GID} not found")
 
-            # Fallback to local file (for development or if secrets fail)
-            if credentials is None:
-                try:
-                    import os
-                    if os.path.exists('service-account-key.json'):
-                        credentials = Credentials.from_service_account_file(
-                            'service-account-key.json', scopes=SCOPES
-                        )
-                    else:
-                        st.error("No authentication method available. Please check secrets or service account file.")
-                        return False
-                except Exception as e:
-                    st.error(f"Local file authentication failed: {str(e)}")
-                    return False
-
-            # Try to authenticate with Google
-            self.gc = gspread.authorize(credentials)
-            self.sheet = self.gc.open_by_key(SHEET_ID)
-            # Get the specific worksheet by GID
-            try:
-                self.worksheet = self.sheet.get_worksheet_by_id(WORKSHEET_GID)
-            except Exception:
-                # Fallback to first worksheet if GID fails
-                st.warning(f"Could not find worksheet with GID {WORKSHEET_GID}, using first worksheet")
-                self.worksheet = self.sheet.get_worksheet(0)
-
-            # Test the connection with a simple call
-            try:
-                self.worksheet.get_all_records(head=1)  # Just get headers to test
-                return True
-            except Exception as e:
-                st.error(f"Sheet access failed. Check sharing permissions: {str(e)}")
-                return False
+            else:
+                logger.info("ℹ️ No Google Sheets credentials found, using CSV fallback")
 
         except Exception as e:
-            st.error(f"Authentication error: {str(e)}")
-            return False
+            logger.error(f"❌ Failed to initialize Google Sheets API: {str(e)}")
+            self.api_available = False
 
-    def read_data(self):
-        """Read all expense data from the sheet"""
+    def load_data(self) -> Optional[pd.DataFrame]:
+        """
+        Load expense data with progressive fallback
+        1. Try Google Sheets API
+        2. Fall back to CSV export
+        3. Return empty DataFrame if all fails
+        """
+        # Try API first
+        if self.api_available and self.worksheet:
+            try:
+                return self._load_from_api()
+            except Exception as e:
+                logger.warning(f"⚠️ API failed, falling back to CSV: {str(e)}")
+
+        # Fallback to CSV
         try:
-            if not self.worksheet:
-                if not self.authenticate():
-                    return pd.DataFrame()
+            return self._load_from_csv()
+        except Exception as e:
+            logger.error(f"❌ CSV fallback failed: {str(e)}")
+            st.error("無法載入資料，請檢查網路連線或聯絡管理員")
+            return pd.DataFrame()
 
-            # Get raw data to handle duplicate headers
-            all_values = self.worksheet.get_all_values()
-            if not all_values:
-                return pd.DataFrame()
+    def _load_from_api(self) -> pd.DataFrame:
+        """Load data directly from Google Sheets API"""
+        logger.info("📊 Loading data from Google Sheets API...")
 
-            # Get headers and clean them
-            headers = all_values[0]
+        # Get all values from the worksheet
+        all_values = self.worksheet.get_all_values()
 
-            # Clean headers - remove empty and fix duplicates
-            cleaned_headers = []
-            for i, header in enumerate(headers):
-                if header.strip():  # If not empty
-                    cleaned_headers.append(header.strip())
-                else:  # If empty, create a placeholder
-                    cleaned_headers.append(f'empty_col_{i}')
+        if not all_values:
+            return pd.DataFrame()
 
-            # Get data rows
-            data_rows = all_values[1:]
+        # First row is headers
+        headers = all_values[0]
+        data_rows = all_values[1:]
 
-            # Create DataFrame
-            df = pd.DataFrame(data_rows, columns=cleaned_headers)
+        # Create DataFrame
+        df = pd.DataFrame(data_rows, columns=headers)
 
-            # Remove completely empty rows
-            df = df.dropna(how='all')
+        # Clean and process the data
+        return self._process_data(df, source="api")
 
-            # Remove empty columns
-            df = df.loc[:, (df != '').any(axis=0)]
+    def _load_from_csv(self) -> pd.DataFrame:
+        """Load data from CSV export as fallback"""
+        logger.info("📄 Loading data from CSV export...")
 
-            # Handle duplicate column names (like duplicate '地點')
-            # If there are duplicates, pandas will name them: '地點', '地點.1', etc.
-            df.columns = df.columns.astype(str)  # Ensure string columns
+        # Construct CSV URL with specific GID
+        csv_url = SHEET_URL
+        if "google_sheets" in st.secrets and "app" in st.secrets:
+            sheet_id = st.secrets["app"].get("sheet_id", SHEET_ID)
+            csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={WORKSHEET_GID}"
 
-            if df.empty:
-                return df
+        # Download CSV data
+        response = requests.get(csv_url, timeout=10)
+        response.raise_for_status()
 
-            # Clean and process data - NEW plain text sheet structure
-            column_mapping = {
-                '日期': 'date',
-                '類型_1': 'category_emoji',
-                '類型_2': 'category_type',
-                '金額': 'amount',
-                '帳戶': 'account',
-                '名稱': 'description',
-                '國家': 'country',
-                '地點': 'location',
-                '備註': 'notes'
-            }
+        # Read into DataFrame
+        from io import StringIO
+        df = pd.read_csv(StringIO(response.text))
 
-            # Rename columns if they exist
-            df = df.rename(columns=column_mapping)
+        return self._process_data(df, source="csv")
 
+    def _process_data(self, df: pd.DataFrame, source: str) -> pd.DataFrame:
+        """
+        Clean and process the raw data from Google Sheets
+        """
+        logger.info(f"🧹 Processing data from {source}...")
+
+        # Remove completely empty rows and columns
+        df = df.dropna(how='all')
+        df = df.loc[:, (df != '').any(axis=0)]
+
+        # Apply column mapping (Chinese to English)
+        df = df.rename(columns=COLUMN_MAPPING)
+
+        # Remove rows where critical fields are missing
+        critical_fields = ['date', 'amount']
+        for field in critical_fields:
+            if field in df.columns:
+                df = df[df[field].notna() & (df[field] != '')]
+
+        if df.empty:
+            logger.warning("⚠️ No valid data found after cleaning")
+            return df
+
+        # Data type conversion
+        try:
             # Convert date column
             if 'date' in df.columns:
                 df['date'] = pd.to_datetime(df['date'], errors='coerce')
 
-            # Convert amount to numeric
+            # Convert amount column
             if 'amount' in df.columns:
                 df['amount'] = pd.to_numeric(df['amount'], errors='coerce')
 
-            # Remove rows with invalid dates or amounts
+            # Remove rows with invalid date or amount
             df = df.dropna(subset=['date', 'amount'])
 
-            # Add derived columns
-            if not df.empty:
+            # Add derived fields for analysis
+            if 'date' in df.columns:
                 df['year'] = df['date'].dt.year
                 df['month'] = df['date'].dt.month
-                df['day_of_week'] = df['date'].dt.day_name()
-                df['month_year'] = df['date'].dt.to_period('M').astype(str)
+                df['month_year'] = df['date'].dt.to_period('M')
+                df['weekday'] = df['date'].dt.day_name()
 
-            return df
+            # Ensure text fields are strings
+            text_fields = ['description', 'category_type', 'category_emoji', 'account', 'country', 'location', 'notes']
+            for field in text_fields:
+                if field in df.columns:
+                    df[field] = df[field].astype(str).fillna('')
+
+            logger.info(f"✅ Processed {len(df)} expense records")
 
         except Exception as e:
-            error_msg = str(e)
-            if "duplicate" in error_msg.lower() and "header" in error_msg.lower():
-                st.error("🔧 Sheet header issue detected - trying to fix automatically...")
-                # This should now be handled by our improved logic above
-                return pd.DataFrame()
-            else:
-                st.error(f"Error reading data: {error_msg}")
-            return pd.DataFrame()
+            logger.error(f"❌ Error processing data: {str(e)}")
+            st.error(f"資料處理錯誤: {str(e)}")
 
-    def add_expense(self, expense_data):
-        """Add a new expense record"""
+        return df
+
+    def add_expense(self, expense_data: Dict) -> bool:
+        """
+        Add a new expense record to the sheet
+        Returns True if successful, False otherwise
+        """
+        if not self.api_available or not self.worksheet:
+            st.warning("⚠️ 無法新增資料，API 不可用")
+            return False
+
         try:
-            if not self.worksheet:
-                if not self.authenticate():
-                    return False
-
-            # Convert expense_data to the format expected by the sheet
+            # Prepare row data in correct column order
             row_data = [
                 expense_data.get('date', ''),
                 expense_data.get('category_emoji', ''),
@@ -196,29 +211,37 @@ class SheetsAPI:
                 expense_data.get('description', ''),
                 expense_data.get('country', ''),
                 expense_data.get('location', ''),
-                expense_data.get('notes', '')
+                expense_data.get('notes', ''),
+                expense_data.get('combined_location', '')  # 合併地點
             ]
 
-            # Append to the sheet
+            # Append to worksheet
             self.worksheet.append_row(row_data)
+            logger.info(f"✅ Added expense: {expense_data.get('description', '')} - NT${expense_data.get('amount', 0)}")
 
-            # Clear cache to refresh data
+            # Clear Streamlit cache to reflect changes
             st.cache_data.clear()
 
             return True
 
         except Exception as e:
-            st.error(f"Error adding expense: {str(e)}")
+            logger.error(f"❌ Failed to add expense: {str(e)}")
+            st.error(f"新增失敗: {str(e)}")
             return False
 
-    def update_expense(self, row_index, expense_data):
-        """Update an existing expense record"""
-        try:
-            if not self.worksheet:
-                if not self.authenticate():
-                    return False
+    def update_expense(self, row_index: int, expense_data: Dict) -> bool:
+        """
+        Update an existing expense record
+        """
+        if not self.api_available or not self.worksheet:
+            st.warning("⚠️ 無法更新資料，API 不可用")
+            return False
 
-            # Convert expense_data to row format
+        try:
+            # Calculate actual row number (accounting for header row)
+            row_number = row_index + 2
+
+            # Prepare row data
             row_data = [
                 expense_data.get('date', ''),
                 expense_data.get('category_emoji', ''),
@@ -228,44 +251,85 @@ class SheetsAPI:
                 expense_data.get('description', ''),
                 expense_data.get('country', ''),
                 expense_data.get('location', ''),
-                expense_data.get('notes', '')
+                expense_data.get('notes', ''),
+                expense_data.get('combined_location', '')
             ]
 
-            # Update the specific row (row_index + 2 because of header and 0-indexing)
-            row_number = row_index + 2
-            self.worksheet.update(f'A{row_number}:I{row_number}', [row_data])
+            # Update the row
+            self.worksheet.update(f'A{row_number}:J{row_number}', [row_data])
+            logger.info(f"✅ Updated expense at row {row_index}")
 
-            # Clear cache to refresh data
+            # Clear cache
             st.cache_data.clear()
 
             return True
 
         except Exception as e:
-            st.error(f"Error updating expense: {str(e)}")
+            logger.error(f"❌ Failed to update expense: {str(e)}")
+            st.error(f"更新失敗: {str(e)}")
             return False
 
-    def delete_expense(self, row_index):
-        """Delete an expense record"""
+    def delete_expense(self, row_index: int) -> bool:
+        """
+        Delete an expense record
+        """
+        if not self.api_available or not self.worksheet:
+            st.warning("⚠️ 無法刪除資料，API 不可用")
+            return False
+
         try:
-            if not self.worksheet:
-                if not self.authenticate():
-                    return False
-
-            # Delete the specific row (row_index + 2 because of header and 0-indexing)
+            # Calculate actual row number
             row_number = row_index + 2
-            self.worksheet.delete_rows(row_number)
 
-            # Clear cache to refresh data
+            # Delete the row
+            self.worksheet.delete_rows(row_number)
+            logger.info(f"✅ Deleted expense at row {row_index}")
+
+            # Clear cache
             st.cache_data.clear()
 
             return True
 
         except Exception as e:
-            st.error(f"Error deleting expense: {str(e)}")
+            logger.error(f"❌ Failed to delete expense: {str(e)}")
+            st.error(f"刪除失敗: {str(e)}")
             return False
 
-# Create a cached instance
-@st.cache_resource
-def get_sheets_api():
-    """Get a cached instance of SheetsAPI"""
-    return SheetsAPI()
+    def get_status(self) -> Dict:
+        """Get API status information"""
+        return {
+            "api_available": self.api_available,
+            "worksheet_connected": self.worksheet is not None,
+            "sheet_id": SHEET_ID if "google_sheets" not in st.secrets else st.secrets.get("app", {}).get("sheet_id", SHEET_ID),
+            "worksheet_gid": WORKSHEET_GID
+        }
+
+
+# Global instance
+_sheets_api = None
+
+def get_sheets_api() -> SheetsAPI:
+    """
+    Get or create the global SheetsAPI instance
+    """
+    global _sheets_api
+    if _sheets_api is None:
+        _sheets_api = SheetsAPI()
+    return _sheets_api
+
+
+@st.cache_data(ttl=300)  # Cache for 5 minutes
+def load_expense_data() -> pd.DataFrame:
+    """
+    Cached function to load expense data
+    """
+    api = get_sheets_api()
+    return api.load_data()
+
+
+def refresh_data():
+    """
+    Force refresh of cached data
+    """
+    st.cache_data.clear()
+    logger.info("🔄 Data cache cleared")

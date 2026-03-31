@@ -1,78 +1,43 @@
-# 📊 Personal Expense Dashboard
+# 📊 Family Expense Dashboard
 
-A real-time expense tracking dashboard that connects to Google Sheets data for family expense monitoring.
+A mobile-first expense tracking application built with Streamlit and Google Sheets.
 
 ## 🚀 Features
 
-- **Real-time Data**: Automatically syncs with Google Sheets expense tracker
-- **Mobile-Friendly**: Responsive design works on phones and laptops
-- **Interactive Visualizations**: Monthly trends, category breakdowns, account comparisons
-- **Smart Filtering**: Filter by date range, account, and category
-- **Summary Metrics**: Total spent, averages, transaction counts
+- **Quick Entry**: One-tap expense logging with smart favorites
+- **Real-time Sync**: Google Sheets as live database
+- **Mobile-First**: Optimized for phone use
+- **Family-Friendly**: Simple PIN authentication, multiple accounts
+- **Progressive Enhancement**: Works with fallback CSV when API unavailable
 
-## 📱 Key Visualizations
+## 🏗️ Architecture
 
-- 📈 Monthly spending trends over time
-- 🥧 Expense category distribution (with emoji categories)
-- 👥 Account holder comparison (菇菇 vs 過兒)
-- 📝 Recent transactions table
-- 💰 Summary metrics dashboard
+- **Frontend**: Streamlit (Python web framework)
+- **Database**: Google Sheets API with CSV fallback
+- **Charts**: Plotly for interactive visualizations
+- **Auth**: Simple PIN + Google Service Account
 
-## 🛠️ Setup
+## ⚡ Quick Start
 
-### Local Development
-
-1. Clone the repository
-2. Install dependencies:
+1. Install dependencies:
    ```bash
    pip install -r requirements.txt
    ```
-3. Run the app:
+
+2. Set up Google Sheets API (see deployment guide)
+
+3. Run locally:
    ```bash
    streamlit run app.py
    ```
 
-### Deployment
+4. Access at `http://localhost:8501`
 
-This app is designed to be deployed on Streamlit Cloud:
+## 📱 Design Principles
 
-1. Push code to GitHub
-2. Connect to Streamlit Cloud
-3. Deploy directly from your repository
+- **Speed First**: Make expense entry faster than opening traditional apps
+- **Smart Defaults**: Learn from user patterns
+- **Graceful Fallbacks**: Always works, even without full API setup
+- **Visual Categories**: Emoji-based categorization for quick recognition
 
-## 🌐 Data Source
-
-The app connects to a live Google Sheets document that collects expense data from a Google Form. The data includes:
-
-- **日期** (Date)
-- **類型_1** (Category with emojis)
-- **類型_2** (Subcategory)
-- **金額** (Amount in TWD)
-- **帳戶** (Account holder)
-- **名稱** (Description)
-- **國家** (Country)
-- **地點** (Location)
-- **備註** (Notes)
-
-## 🔧 Configuration
-
-To use with your own Google Sheets:
-
-1. Make your Google Sheet public (view-only)
-2. Get the CSV export URL
-3. Update the `SHEET_URL` variable in `app.py`
-
-## 📊 Dashboard Sections
-
-1. **Summary Cards**: Quick overview of spending metrics
-2. **Monthly Trends**: Line chart showing spending over time
-3. **Category Analysis**: Pie chart of expense categories
-4. **Account Comparison**: Bar chart comparing account holders
-5. **Recent Transactions**: Table of latest expenses
-
-## 💡 Technical Notes
-
-- Data is cached for 5 minutes to improve performance
-- Automatic data cleaning and type conversion
-- Responsive CSS for mobile devices
-- Error handling for data loading issues
+Built for real family use - prioritizing practical functionality over complex features.
