@@ -54,16 +54,28 @@ class SheetsAPI:
 
                 # Find worksheet by GID
                 self.worksheet = None
-                for ws in spreadsheet.worksheets():
+                worksheets = spreadsheet.worksheets()
+                logger.info(f"📋 Available worksheets: {[(ws.title, ws.id) for ws in worksheets]}")
+
+                for ws in worksheets:
+                    logger.info(f"🔍 Checking worksheet: {ws.title} (GID: {ws.id})")
                     if str(ws.id) == str(WORKSHEET_GID):
                         self.worksheet = ws
+                        logger.info(f"✅ Found target worksheet: {ws.title}")
                         break
 
                 if self.worksheet:
                     self.api_available = True
-                    logger.info("✅ Google Sheets API initialized successfully")
+                    # Check worksheet has data
+                    try:
+                        row_count = len(self.worksheet.get_all_values())
+                        logger.info(f"✅ Google Sheets API initialized successfully - {row_count} rows available")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Could not check row count: {e}")
+                        logger.info("✅ Google Sheets API initialized successfully")
                 else:
-                    logger.warning(f"⚠️ Worksheet with GID {WORKSHEET_GID} not found")
+                    logger.error(f"❌ Worksheet with GID {WORKSHEET_GID} not found")
+                    logger.error(f"Available worksheets: {[(ws.title, ws.id) for ws in worksheets]}")
 
             else:
                 logger.info("ℹ️ No Google Sheets credentials found, using CSV fallback")
@@ -75,23 +87,42 @@ class SheetsAPI:
     def load_data(self) -> Optional[pd.DataFrame]:
         """
         Load expense data with progressive fallback
-        1. Try Google Sheets API
-        2. Fall back to CSV export
+        1. Try Google Sheets API (PREFERRED - has all data)
+        2. Fall back to CSV export (may have authentication issues)
         3. Return empty DataFrame if all fails
         """
-        # Try API first
+        # Try API first - this is our primary method
         if self.api_available and self.worksheet:
             try:
-                return self._load_from_api()
+                logger.info("🚀 Attempting to load data via Google Sheets API...")
+                df = self._load_from_api()
+                if not df.empty:
+                    logger.info(f"✅ API loaded {len(df)} records successfully")
+                    return df
+                else:
+                    logger.warning("⚠️ API returned empty DataFrame")
             except Exception as e:
-                logger.warning(f"⚠️ API failed, falling back to CSV: {str(e)}")
+                logger.error(f"❌ API failed: {str(e)}")
+                st.error(f"Google Sheets API 錯誤: {str(e)}")
+                # Don't fall back to CSV if API fails - CSV is likely to have auth issues too
 
-        # Fallback to CSV
+        # Show API status
+        if not self.api_available:
+            st.error("❌ Google Sheets API 不可用")
+            st.info("💡 請確認 Streamlit Cloud secrets 設定正確")
+
+        if not self.worksheet:
+            st.error("❌ 無法連接到工作表")
+            st.info(f"💡 請確認工作表 GID {WORKSHEET_GID} 存在且可訪問")
+
+        # Only try CSV as last resort and warn user
+        st.warning("⚠️ 嘗試 CSV 備用方案 (可能無法存取完整資料)")
         try:
             return self._load_from_csv()
         except Exception as e:
             logger.error(f"❌ CSV fallback failed: {str(e)}")
-            st.error("無法載入資料，請檢查網路連線或聯絡管理員")
+            st.error("❌ 所有資料載入方法均失敗")
+            st.info("💡 請檢查網路連線和 Google Sheets 權限設定")
             return pd.DataFrame()
 
     def _load_from_api(self) -> pd.DataFrame:
@@ -101,15 +132,31 @@ class SheetsAPI:
         # Get all values from the worksheet
         all_values = self.worksheet.get_all_values()
 
+        logger.info(f"📊 Retrieved {len(all_values)} total rows from API")
+
         if not all_values:
+            logger.warning("⚠️ No data retrieved from API")
             return pd.DataFrame()
 
         # First row is headers
         headers = all_values[0]
         data_rows = all_values[1:]
 
+        logger.info(f"📋 Headers: {headers}")
+        logger.info(f"📊 Data rows: {len(data_rows)}")
+
         # Create DataFrame
         df = pd.DataFrame(data_rows, columns=headers)
+
+        # Show summary before processing
+        logger.info(f"📊 Raw DataFrame shape: {df.shape}")
+        if 'amount' in df.columns or '金額' in df.columns:
+            amount_col = '金額' if '金額' in df.columns else 'amount'
+            # Convert to numeric for sum calculation
+            numeric_amounts = pd.to_numeric(df[amount_col], errors='coerce')
+            total = numeric_amounts.sum()
+            logger.info(f"💰 Total amount before processing: {total:,.0f}")
+            st.info(f"📊 載入原始資料: {len(df)} 筆, 總額: NT${total:,.0f}")
 
         # Clean and process the data
         return self._process_data(df, source="api")
@@ -124,22 +171,40 @@ class SheetsAPI:
             sheet_id = st.secrets["app"].get("sheet_id", SHEET_ID)
             csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={WORKSHEET_GID}"
 
-        # Download CSV data with proper UTF-8 handling
-        response = requests.get(csv_url, timeout=10)
-        response.raise_for_status()
+        logger.info(f"📄 CSV URL: {csv_url}")
 
-        # Try multiple encoding approaches
         try:
-            # Method 1: Force UTF-8 encoding
-            response.encoding = 'utf-8'
-            csv_text = response.text
-        except UnicodeDecodeError:
+            # Download CSV data with proper UTF-8 handling
+            response = requests.get(csv_url, timeout=10)
+            logger.info(f"📄 CSV response status: {response.status_code}")
+
+            # Check if we got redirected or have authentication issues
+            if response.status_code == 200:
+                content_type = response.headers.get('content-type', '')
+                if 'text/html' in content_type:
+                    logger.warning("📄 CSV export returned HTML (likely authentication required)")
+                    st.warning("⚠️ CSV 匯出需要驗證，僅使用 API 模式")
+                    return pd.DataFrame()
+
+            response.raise_for_status()
+
+            # Try multiple encoding approaches
             try:
-                # Method 2: Use raw bytes with UTF-8
-                csv_text = response.content.decode('utf-8')
+                # Method 1: Force UTF-8 encoding
+                response.encoding = 'utf-8'
+                csv_text = response.text
             except UnicodeDecodeError:
-                # Method 3: Use raw bytes with UTF-8 and ignore errors
-                csv_text = response.content.decode('utf-8', errors='replace')
+                try:
+                    # Method 2: Use raw bytes with UTF-8
+                    csv_text = response.content.decode('utf-8')
+                except UnicodeDecodeError:
+                    # Method 3: Use raw bytes with UTF-8 and ignore errors
+                    csv_text = response.content.decode('utf-8', errors='replace')
+
+        except Exception as e:
+            logger.warning(f"📄 CSV fallback failed: {str(e)}")
+            st.warning("⚠️ CSV 資料載入失敗，請確認 Google Sheets API 設定正確")
+            return pd.DataFrame()
 
         # Read into DataFrame
         from io import StringIO
@@ -171,9 +236,15 @@ class SheetsAPI:
         """
         logger.info(f"🧹 Processing data from {source}...")
 
-        # Remove completely empty rows and columns
+        # Show shape before cleaning
+        logger.info(f"📊 Before cleaning: {df.shape}")
+
+        # Remove completely empty rows and columns (but be less aggressive)
         df = df.dropna(how='all')
-        df = df.loc[:, (df != '').any(axis=0)]
+        # Only remove columns that are completely empty
+        df = df.loc[:, df.notna().any()]
+
+        logger.info(f"📊 After removing empty rows/cols: {df.shape}")
 
         # Debug: Show actual column names
         logger.info(f"📋 Actual columns in sheet: {list(df.columns)}")
@@ -187,15 +258,30 @@ class SheetsAPI:
         logger.info(f"✅ Mapped columns: {existing_mapping}")
         logger.info(f"🔄 Final columns: {list(df.columns)}")
 
-        # Remove rows where critical fields are missing (check what fields actually exist)
+        # Check for critical fields but don't be too aggressive about removing data
         critical_fields = ['date', 'amount']
         available_critical = [field for field in critical_fields if field in df.columns]
 
         logger.info(f"🎯 Critical fields available: {available_critical}")
 
         if available_critical:
-            for field in available_critical:
-                df = df[df[field].notna() & (df[field] != '')]
+            # Only remove rows where BOTH date AND amount are missing/empty
+            # Be more lenient - allow rows with some missing data
+            rows_before = len(df)
+            if 'date' in df.columns and 'amount' in df.columns:
+                # Only remove rows where both date and amount are empty
+                df = df[~(df['date'].isna() & df['amount'].isna())]
+                # Also remove rows where both are empty strings
+                df = df[~((df['date'] == '') & (df['amount'] == ''))]
+            elif 'date' in df.columns:
+                # Only remove rows with empty dates
+                df = df[df['date'].notna() & (df['date'] != '')]
+            elif 'amount' in df.columns:
+                # Only remove rows with empty amounts
+                df = df[df['amount'].notna() & (df['amount'] != '')]
+
+            rows_after = len(df)
+            logger.info(f"📊 Removed {rows_before - rows_after} rows with missing critical data")
         else:
             logger.warning(f"⚠️ No critical fields found! Available columns: {list(df.columns)}")
             st.warning(f"找不到必要欄位 (date/amount)。實際欄位: {list(df.columns)}")
@@ -218,11 +304,29 @@ class SheetsAPI:
             if amount_cols:
                 amount_col = amount_cols[0]
                 logger.info(f"💰 Converting amount column: {amount_col}")
+
+                # Show some sample values before conversion
+                logger.info(f"💰 Sample amount values: {df[amount_col].head().tolist()}")
+
                 df['amount'] = pd.to_numeric(df[amount_col], errors='coerce')
 
-            # Only remove rows with invalid data if both date and amount exist
+                # Show conversion results
+                valid_amounts = df['amount'].notna().sum()
+                total_amount = df['amount'].sum()
+                logger.info(f"💰 After conversion: {valid_amounts} valid amounts, total: {total_amount:,.0f}")
+
+            # Only remove rows with invalid data if both date and amount exist, but be more lenient
             if 'date' in df.columns and 'amount' in df.columns:
+                rows_before = len(df)
+                # Only drop rows where BOTH date and amount are invalid
                 df = df.dropna(subset=['date', 'amount'])
+                rows_after = len(df)
+                logger.info(f"📊 Removed {rows_before - rows_after} rows with invalid date/amount")
+
+                if len(df) > 0:
+                    final_total = df['amount'].sum()
+                    logger.info(f"💰 Final total after all processing: {final_total:,.0f}")
+                    st.success(f"✅ 處理完成: {len(df)} 筆有效記錄, 總額: NT${final_total:,.0f}")
 
             # Add derived fields for analysis (only if date column exists)
             if 'date' in df.columns:
