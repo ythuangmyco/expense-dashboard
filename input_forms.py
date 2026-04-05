@@ -74,7 +74,6 @@ def smart_suggestions(df: pd.DataFrame, category_type: str = None) -> Dict:
 
 def calculator_widget():
     """Simple calculator widget for amount input"""
-    st.markdown("### 🧮 計算機")
 
     # Initialize calculator state
     if 'calc_display' not in st.session_state:
@@ -118,17 +117,21 @@ def calculator_widget():
 
         if st.session_state.calc_operator and not st.session_state.calc_waiting_operand:
             # Perform calculation if there's a pending operation
-            if st.session_state.calc_operator == "+":
-                result = st.session_state.calc_operand + current_value
-            elif st.session_state.calc_operator == "-":
-                result = st.session_state.calc_operand - current_value
-            elif st.session_state.calc_operator == "*":
-                result = st.session_state.calc_operand * current_value
-            elif st.session_state.calc_operator == "/":
-                result = st.session_state.calc_operand / current_value if current_value != 0 else 0
+            try:
+                if st.session_state.calc_operator == "+":
+                    result = st.session_state.calc_operand + current_value
+                elif st.session_state.calc_operator == "-":
+                    result = st.session_state.calc_operand - current_value
+                elif st.session_state.calc_operator == "*":
+                    result = st.session_state.calc_operand * current_value
+                elif st.session_state.calc_operator == "/":
+                    result = st.session_state.calc_operand / current_value if current_value != 0 else 0
 
-            st.session_state.calc_display = str(int(result) if result.is_integer() else round(result, 2))
-            st.session_state.calc_operand = result
+                st.session_state.calc_display = str(int(result) if result.is_integer() else round(result, 2))
+                st.session_state.calc_operand = result
+            except:
+                st.session_state.calc_display = "Error"
+                st.session_state.calc_operand = 0
         else:
             st.session_state.calc_operand = current_value
 
@@ -138,17 +141,20 @@ def calculator_widget():
     def calculate():
         if st.session_state.calc_operator and not st.session_state.calc_waiting_operand:
             current_value = float(st.session_state.calc_display)
+            try:
+                if st.session_state.calc_operator == "+":
+                    result = st.session_state.calc_operand + current_value
+                elif st.session_state.calc_operator == "-":
+                    result = st.session_state.calc_operand - current_value
+                elif st.session_state.calc_operator == "*":
+                    result = st.session_state.calc_operand * current_value
+                elif st.session_state.calc_operator == "/":
+                    result = st.session_state.calc_operand / current_value if current_value != 0 else 0
 
-            if st.session_state.calc_operator == "+":
-                result = st.session_state.calc_operand + current_value
-            elif st.session_state.calc_operator == "-":
-                result = st.session_state.calc_operand - current_value
-            elif st.session_state.calc_operator == "*":
-                result = st.session_state.calc_operand * current_value
-            elif st.session_state.calc_operator == "/":
-                result = st.session_state.calc_operand / current_value if current_value != 0 else 0
+                st.session_state.calc_display = str(int(result) if result.is_integer() else round(result, 2))
+            except:
+                st.session_state.calc_display = "Error"
 
-            st.session_state.calc_display = str(int(result) if result.is_integer() else round(result, 2))
             st.session_state.calc_operator = ""
             st.session_state.calc_waiting_operand = True
 
@@ -158,58 +164,62 @@ def calculator_widget():
         st.session_state.calc_operand = 0
         st.session_state.calc_waiting_operand = False
 
+    # Create unique key timestamp for buttons
+    import time
+    key_suffix = str(int(time.time() * 1000))
+
     # Button layout
     col1, col2, col3, col4 = st.columns(4)
 
     # Row 1: Clear and operators
     with col1:
-        if st.button("C", key="calc_clear", use_container_width=True):
+        if st.button("C", key=f"calc_clear_{key_suffix}", use_container_width=True):
             clear()
             st.rerun()
     with col2:
-        if st.button("÷", key="calc_div", use_container_width=True):
+        if st.button("÷", key=f"calc_div_{key_suffix}", use_container_width=True):
             input_operator("/")
             st.rerun()
     with col3:
-        if st.button("×", key="calc_mult", use_container_width=True):
+        if st.button("×", key=f"calc_mult_{key_suffix}", use_container_width=True):
             input_operator("*")
             st.rerun()
     with col4:
-        if st.button("−", key="calc_minus", use_container_width=True):
+        if st.button("−", key=f"calc_minus_{key_suffix}", use_container_width=True):
             input_operator("-")
             st.rerun()
 
     # Row 2: 7, 8, 9, +
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        if st.button("7", key="calc_7", use_container_width=True):
+        if st.button("7", key=f"calc_7_{key_suffix}", use_container_width=True):
             input_digit(7)
             st.rerun()
     with col2:
-        if st.button("8", key="calc_8", use_container_width=True):
+        if st.button("8", key=f"calc_8_{key_suffix}", use_container_width=True):
             input_digit(8)
             st.rerun()
     with col3:
-        if st.button("9", key="calc_9", use_container_width=True):
+        if st.button("9", key=f"calc_9_{key_suffix}", use_container_width=True):
             input_digit(9)
             st.rerun()
     with col4:
-        if st.button("＋", key="calc_plus", use_container_width=True):
+        if st.button("＋", key=f"calc_plus_{key_suffix}", use_container_width=True):
             input_operator("+")
             st.rerun()
 
     # Row 3: 4, 5, 6
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        if st.button("4", key="calc_4", use_container_width=True):
+        if st.button("4", key=f"calc_4_{key_suffix}", use_container_width=True):
             input_digit(4)
             st.rerun()
     with col2:
-        if st.button("5", key="calc_5", use_container_width=True):
+        if st.button("5", key=f"calc_5_{key_suffix}", use_container_width=True):
             input_digit(5)
             st.rerun()
     with col3:
-        if st.button("6", key="calc_6", use_container_width=True):
+        if st.button("6", key=f"calc_6_{key_suffix}", use_container_width=True):
             input_digit(6)
             st.rerun()
     with col4:
@@ -218,19 +228,19 @@ def calculator_widget():
     # Row 4: 1, 2, 3, =
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        if st.button("1", key="calc_1", use_container_width=True):
+        if st.button("1", key=f"calc_1_{key_suffix}", use_container_width=True):
             input_digit(1)
             st.rerun()
     with col2:
-        if st.button("2", key="calc_2", use_container_width=True):
+        if st.button("2", key=f"calc_2_{key_suffix}", use_container_width=True):
             input_digit(2)
             st.rerun()
     with col3:
-        if st.button("3", key="calc_3", use_container_width=True):
+        if st.button("3", key=f"calc_3_{key_suffix}", use_container_width=True):
             input_digit(3)
             st.rerun()
     with col4:
-        if st.button("＝", key="calc_equals", use_container_width=True):
+        if st.button("＝", key=f"calc_equals_{key_suffix}", use_container_width=True):
             calculate()
             st.rerun()
 
@@ -239,7 +249,7 @@ def calculator_widget():
     with col1:
         st.markdown("<div style='height: 38px;'></div>", unsafe_allow_html=True)  # Empty space
     with col2:
-        if st.button("0", key="calc_0", use_container_width=True):
+        if st.button("0", key=f"calc_0_{key_suffix}", use_container_width=True):
             input_digit(0)
             st.rerun()
     with col3:
@@ -251,7 +261,7 @@ def calculator_widget():
     st.markdown("---")
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("📋 使用這個結果", key="use_calc_result", use_container_width=True, type="primary"):
+        if st.button("📋 使用這個結果", key=f"use_calc_result_{key_suffix}", use_container_width=True, type="primary"):
             try:
                 result = float(st.session_state.calc_display)
                 st.session_state.calc_result_to_use = result
@@ -262,7 +272,7 @@ def calculator_widget():
                 return None
 
     with col2:
-        if st.button("🗑️ 重置計算機", key="reset_calc", use_container_width=True):
+        if st.button("🗑️ 重置計算機", key=f"reset_calc_{key_suffix}", use_container_width=True):
             clear()
             st.rerun()
 
@@ -284,6 +294,37 @@ def expense_input_form(df: pd.DataFrame) -> bool:
         st.warning("⚠️ 目前僅支援查看模式，無法新增支出")
         st.info("請確認 Google Sheets API 設定正確")
         return False
+
+    # Calculator section (outside form)
+    st.markdown("### 🧮 計算機")
+
+    # Calculator toggle
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        show_calculator = st.button("📱 開啟計算機", help="快速計算金額", use_container_width=True)
+    with col2:
+        if st.button("🗑️ 清除計算結果", help="清除計算結果", use_container_width=True):
+            if 'calc_result_to_use' in st.session_state:
+                del st.session_state.calc_result_to_use
+            st.success("✅ 已清除計算結果")
+
+    # Show calculator if toggled
+    if show_calculator:
+        st.session_state.show_calc = not st.session_state.get('show_calc', False)
+
+    if st.session_state.get('show_calc', False):
+        with st.expander("🧮 計算機", expanded=True):
+            calc_result = calculator_widget()
+            if calc_result is not None:
+                st.session_state.calc_result_to_use = calc_result
+                st.session_state.show_calc = False  # Close calculator
+                st.rerun()
+
+    # Show current calculator result if available
+    if 'calc_result_to_use' in st.session_state:
+        st.success(f"🎯 計算結果: NT${st.session_state.calc_result_to_use:,.0f} (將自動填入金額欄位)")
+
+    st.divider()
 
     with st.form("expense_form", clear_on_submit=True):
         # First row: Date and Account
@@ -328,41 +369,21 @@ def expense_input_form(df: pd.DataFrame) -> bool:
         # Get smart suggestions for this category
         suggestions = smart_suggestions(df, category_type)
 
-        # Amount input section with calculator
-        st.markdown("#### 💰 金額")
-
         # Check if user wants to use calculator result
         default_amount = None
         if 'calc_result_to_use' in st.session_state:
             default_amount = st.session_state.calc_result_to_use
             del st.session_state.calc_result_to_use  # Clear it after use
 
-        # Calculator toggle
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            amount = st.number_input(
-                "輸入金額",
-                min_value=0,
-                step=10,
-                value=default_amount,
-                placeholder="請輸入金額...",
-                help="支出金額"
-            )
-        with col2:
-            show_calculator = st.button("🧮", help="開啟計算機", use_container_width=True)
-
-        # Show calculator if toggled
-        if show_calculator or 'show_calc' in st.session_state:
-            if show_calculator:
-                st.session_state.show_calc = not st.session_state.get('show_calc', False)
-
-            if st.session_state.get('show_calc', False):
-                with st.expander("🧮 計算機", expanded=True):
-                    calc_result = calculator_widget()
-                    if calc_result is not None:
-                        st.session_state.calc_result_to_use = calc_result
-                        st.session_state.show_calc = False  # Close calculator
-                        st.rerun()
+        # Amount input (empty by default)
+        amount = st.number_input(
+            "金額 💰",
+            min_value=0,
+            step=10,
+            value=default_amount,
+            placeholder="請輸入金額...",
+            help="支出金額"
+        )
 
         # Show amount suggestions as text only
         if suggestions["amounts"]:
