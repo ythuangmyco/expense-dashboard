@@ -72,101 +72,6 @@ def smart_suggestions(df: pd.DataFrame, category_type: str = None) -> Dict:
     return suggestions
 
 
-def simple_math_helper():
-    """Simple math helper for quick calculations"""
-
-    st.markdown("### 🧮 快速計算")
-
-    # Initialize session state
-    if 'quick_calc_result' not in st.session_state:
-        st.session_state.quick_calc_result = 0
-
-    # Simple input for manual entry
-    st.markdown("**💡 直接輸入計算:**")
-
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        calc_input = st.text_input(
-            "輸入算式",
-            placeholder="例如: 150 + 50, 200 * 1.1, 1200 / 3",
-            help="支援 +, -, *, / 運算"
-        )
-    with col2:
-        if st.button("💯", help="計算", use_container_width=True):
-            try:
-                # Safe evaluation of simple math expressions
-                if calc_input and all(c in "0123456789+-*/.() " for c in calc_input):
-                    result = eval(calc_input)
-                    st.session_state.quick_calc_result = float(result)
-                    st.session_state.calc_result_to_use = float(result)
-                    st.success(f"✅ 結果: {result:,.0f}")
-                    st.rerun()
-                else:
-                    st.error("❌ 請使用數字和 +, -, *, / 符號")
-            except:
-                st.error("❌ 無效的計算式")
-
-    st.markdown("---")
-
-    # Common quick calculations
-    st.markdown("**🚀 常用計算:**")
-
-    # Row 1: Tax and percentage calculations
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.markdown("**加稅:**")
-        base_amount = st.number_input("金額", min_value=0, step=10, key="tax_base")
-        if st.button("+ 5% 稅", use_container_width=True):
-            result = base_amount * 1.05
-            st.session_state.calc_result_to_use = result
-            st.success(f"💰 {base_amount:,.0f} + 5% = {result:,.0f}")
-            st.rerun()
-        if st.button("+ 10% 稅", use_container_width=True):
-            result = base_amount * 1.1
-            st.session_state.calc_result_to_use = result
-            st.success(f"💰 {base_amount:,.0f} + 10% = {result:,.0f}")
-            st.rerun()
-
-    with col2:
-        st.markdown("**分攤:**")
-        total_amount = st.number_input("總金額", min_value=0, step=10, key="split_total")
-        people = st.number_input("人數", min_value=1, max_value=10, step=1, value=2)
-        if st.button(f"➗ {people} 人分攤", use_container_width=True):
-            result = total_amount / people
-            st.session_state.calc_result_to_use = result
-            st.success(f"💰 {total_amount:,.0f} ÷ {people} = {result:,.0f}")
-            st.rerun()
-
-    st.markdown("---")
-
-    # Quick add section
-    st.markdown("**➕ 快速加總:**")
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        amount1 = st.number_input("金額 1", min_value=0, step=10, key="add1")
-    with col2:
-        amount2 = st.number_input("金額 2", min_value=0, step=10, key="add2")
-    with col3:
-        amount3 = st.number_input("金額 3", min_value=0, step=10, key="add3")
-
-    if st.button("➕ 計算總和", use_container_width=True, type="primary"):
-        result = amount1 + amount2 + amount3
-        st.session_state.calc_result_to_use = result
-        amounts = [amount1, amount2, amount3]
-        non_zero = [a for a in amounts if a > 0]
-        if len(non_zero) > 1:
-            amount_str = " + ".join([f"{a:,.0f}" for a in non_zero])
-            st.success(f"💰 {amount_str} = {result:,.0f}")
-        else:
-            st.success(f"💰 總計: {result:,.0f}")
-        st.rerun()
-
-    return None
-
-
 def expense_input_form(df: pd.DataFrame) -> bool:
     """
     Main expense input form with smart defaults and mobile optimization
@@ -182,25 +87,6 @@ def expense_input_form(df: pd.DataFrame) -> bool:
         st.warning("⚠️ 目前僅支援查看模式，無法新增支出")
         st.info("請確認 Google Sheets API 設定正確")
         return False
-
-    # Quick Math Helper (outside form)
-    with st.expander("🧮 快速計算器", expanded=False):
-        st.caption("💡 計算完成後，金額會自動填入下方表單")
-
-        # Show current result if available
-        if 'calc_result_to_use' in st.session_state:
-            st.info(f"💰 準備使用: NT${st.session_state.calc_result_to_use:,.0f}")
-
-        simple_math_helper()
-
-        # Clear result button (only show if result exists)
-        if 'calc_result_to_use' in st.session_state:
-            if st.button("🗑️ 清除結果", help="清除儲存的計算結果", use_container_width=True):
-                del st.session_state.calc_result_to_use
-                st.success("✅ 已清除")
-                st.rerun()
-
-    st.divider()
 
     with st.form("expense_form", clear_on_submit=True):
         # First row: Date and Account
@@ -245,18 +131,12 @@ def expense_input_form(df: pd.DataFrame) -> bool:
         # Get smart suggestions for this category
         suggestions = smart_suggestions(df, category_type)
 
-        # Check if user wants to use calculator result
-        default_amount = None
-        if 'calc_result_to_use' in st.session_state:
-            default_amount = st.session_state.calc_result_to_use
-            del st.session_state.calc_result_to_use  # Clear it after use
-
         # Amount input (empty by default)
         amount = st.number_input(
             "金額 💰",
             min_value=0,
             step=10,
-            value=default_amount,
+            value=None,
             placeholder="請輸入金額...",
             help="支出金額"
         )
