@@ -73,7 +73,7 @@ def smart_suggestions(df: pd.DataFrame, category_type: str = None) -> Dict:
 
 
 def calculator_widget():
-    """Simple calculator widget for amount input"""
+    """Mobile-optimized calculator widget for amount input"""
 
     # Initialize calculator state
     if 'calc_display' not in st.session_state:
@@ -85,17 +85,21 @@ def calculator_widget():
     if 'calc_waiting_operand' not in st.session_state:
         st.session_state.calc_waiting_operand = False
 
-    # Display current value
+    # Display current value with larger mobile-friendly styling
     st.markdown(f"""
     <div style="
         background: #f0f2f6;
-        padding: 15px;
-        border-radius: 5px;
+        padding: 20px;
+        border-radius: 10px;
         text-align: right;
-        font-size: 24px;
+        font-size: 32px;
         font-weight: bold;
-        margin-bottom: 10px;
-        border: 2px solid #e0e0e0;
+        margin-bottom: 15px;
+        border: 3px solid #e0e0e0;
+        min-height: 60px;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
     ">
         {st.session_state.calc_display}
     </div>
@@ -168,29 +172,39 @@ def calculator_widget():
     import time
     key_suffix = str(int(time.time() * 1000))
 
-    # Button layout
-    col1, col2, col3, col4 = st.columns(4)
+    # Mobile-optimized button styling
+    button_style = """
+    <style>
+    .stButton > button {
+        height: 60px !important;
+        font-size: 20px !important;
+        font-weight: bold !important;
+        border-radius: 10px !important;
+        margin: 2px !important;
+    }
+    </style>
+    """
+    st.markdown(button_style, unsafe_allow_html=True)
 
-    # Row 1: Clear and operators
+    # Top row: Clear and backspace
+    col1, col2 = st.columns(2)
     with col1:
-        if st.button("C", key=f"calc_clear_{key_suffix}", use_container_width=True):
+        if st.button("🗑️ 清除", key=f"calc_clear_{key_suffix}", use_container_width=True):
             clear()
             st.rerun()
     with col2:
-        if st.button("÷", key=f"calc_div_{key_suffix}", use_container_width=True):
-            input_operator("/")
-            st.rerun()
-    with col3:
-        if st.button("×", key=f"calc_mult_{key_suffix}", use_container_width=True):
-            input_operator("*")
-            st.rerun()
-    with col4:
-        if st.button("−", key=f"calc_minus_{key_suffix}", use_container_width=True):
-            input_operator("-")
+        if st.button("⌫", key=f"calc_backspace_{key_suffix}", use_container_width=True):
+            if len(st.session_state.calc_display) > 1:
+                st.session_state.calc_display = st.session_state.calc_display[:-1]
+            else:
+                st.session_state.calc_display = "0"
             st.rerun()
 
-    # Row 2: 7, 8, 9, +
-    col1, col2, col3, col4 = st.columns(4)
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Numbers layout: 3x3 grid for numbers
+    # Row 1: 7, 8, 9
+    col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("7", key=f"calc_7_{key_suffix}", use_container_width=True):
             input_digit(7)
@@ -203,13 +217,9 @@ def calculator_widget():
         if st.button("9", key=f"calc_9_{key_suffix}", use_container_width=True):
             input_digit(9)
             st.rerun()
-    with col4:
-        if st.button("＋", key=f"calc_plus_{key_suffix}", use_container_width=True):
-            input_operator("+")
-            st.rerun()
 
-    # Row 3: 4, 5, 6
-    col1, col2, col3, col4 = st.columns(4)
+    # Row 2: 4, 5, 6
+    col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("4", key=f"calc_4_{key_suffix}", use_container_width=True):
             input_digit(4)
@@ -222,11 +232,9 @@ def calculator_widget():
         if st.button("6", key=f"calc_6_{key_suffix}", use_container_width=True):
             input_digit(6)
             st.rerun()
-    with col4:
-        st.markdown("<div style='height: 38px;'></div>", unsafe_allow_html=True)  # Empty space
 
-    # Row 4: 1, 2, 3, =
-    col1, col2, col3, col4 = st.columns(4)
+    # Row 3: 1, 2, 3
+    col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("1", key=f"calc_1_{key_suffix}", use_container_width=True):
             input_digit(1)
@@ -239,40 +247,64 @@ def calculator_widget():
         if st.button("3", key=f"calc_3_{key_suffix}", use_container_width=True):
             input_digit(3)
             st.rerun()
-    with col4:
-        if st.button("＝", key=f"calc_equals_{key_suffix}", use_container_width=True):
-            calculate()
-            st.rerun()
 
-    # Row 5: 0
-    col1, col2, col3, col4 = st.columns(4)
+    # Row 4: 0 (spans 2 columns) and decimal point
+    col1, col2, col3 = st.columns([2, 1, 0.1])
     with col1:
-        st.markdown("<div style='height: 38px;'></div>", unsafe_allow_html=True)  # Empty space
-    with col2:
         if st.button("0", key=f"calc_0_{key_suffix}", use_container_width=True):
             input_digit(0)
             st.rerun()
+    with col2:
+        if st.button(".", key=f"calc_dot_{key_suffix}", use_container_width=True):
+            if "." not in st.session_state.calc_display:
+                st.session_state.calc_display += "."
+            st.rerun()
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Operations row
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        if st.button("➕", key=f"calc_plus_{key_suffix}", use_container_width=True):
+            input_operator("+")
+            st.rerun()
+    with col2:
+        if st.button("➖", key=f"calc_minus_{key_suffix}", use_container_width=True):
+            input_operator("-")
+            st.rerun()
     with col3:
-        st.markdown("<div style='height: 38px;'></div>", unsafe_allow_html=True)  # Empty space
+        if st.button("✖️", key=f"calc_mult_{key_suffix}", use_container_width=True):
+            input_operator("*")
+            st.rerun()
     with col4:
-        st.markdown("<div style='height: 38px;'></div>", unsafe_allow_html=True)  # Empty space
+        if st.button("➗", key=f"calc_div_{key_suffix}", use_container_width=True):
+            input_operator("/")
+            st.rerun()
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Equals button
+    if st.button("🟰 計算結果", key=f"calc_equals_{key_suffix}", use_container_width=True, type="secondary"):
+        calculate()
+        st.rerun()
+
+    st.markdown("---")
 
     # Use result button
-    st.markdown("---")
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("📋 使用這個結果", key=f"use_calc_result_{key_suffix}", use_container_width=True, type="primary"):
+        if st.button("✅ 使用這個金額", key=f"use_calc_result_{key_suffix}", use_container_width=True, type="primary"):
             try:
                 result = float(st.session_state.calc_display)
                 st.session_state.calc_result_to_use = result
-                st.success(f"✅ 將使用金額：NT${result:,.0f}")
+                st.success(f"💰 已設定金額：NT${result:,.0f}")
                 return result
             except:
-                st.error("❌ 無效的計算結果")
+                st.error("❌ 無效的數值")
                 return None
 
     with col2:
-        if st.button("🗑️ 重置計算機", key=f"reset_calc_{key_suffix}", use_container_width=True):
+        if st.button("🔄 重置", key=f"reset_calc_{key_suffix}", use_container_width=True):
             clear()
             st.rerun()
 
@@ -296,33 +328,31 @@ def expense_input_form(df: pd.DataFrame) -> bool:
         return False
 
     # Calculator section (outside form)
-    st.markdown("### 🧮 計算機")
-
-    # Calculator toggle
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        show_calculator = st.button("📱 開啟計算機", help="快速計算金額", use_container_width=True)
-    with col2:
-        if st.button("🗑️ 清除計算結果", help="清除計算結果", use_container_width=True):
-            if 'calc_result_to_use' in st.session_state:
-                del st.session_state.calc_result_to_use
-            st.success("✅ 已清除計算結果")
-
-    # Show calculator if toggled
-    if show_calculator:
-        st.session_state.show_calc = not st.session_state.get('show_calc', False)
-
-    if st.session_state.get('show_calc', False):
-        with st.expander("🧮 計算機", expanded=True):
-            calc_result = calculator_widget()
-            if calc_result is not None:
-                st.session_state.calc_result_to_use = calc_result
-                st.session_state.show_calc = False  # Close calculator
-                st.rerun()
+    st.markdown("## 🧮 快速計算器")
 
     # Show current calculator result if available
     if 'calc_result_to_use' in st.session_state:
-        st.success(f"🎯 計算結果: NT${st.session_state.calc_result_to_use:,.0f} (將自動填入金額欄位)")
+        st.success(f"💰 計算結果: NT${st.session_state.calc_result_to_use:,.0f}")
+        st.caption("👆 這個金額將自動填入下方表單")
+
+    # Calculator toggle - single large button
+    if st.button("📱 打開計算器", help="快速計算金額", use_container_width=True, type="primary"):
+        st.session_state.show_calc = not st.session_state.get('show_calc', False)
+
+    # Show calculator if toggled
+    if st.session_state.get('show_calc', False):
+        calc_result = calculator_widget()
+        if calc_result is not None:
+            st.session_state.calc_result_to_use = calc_result
+            st.session_state.show_calc = False  # Close calculator
+            st.rerun()
+
+    # Clear result button (only show if result exists)
+    if 'calc_result_to_use' in st.session_state:
+        if st.button("🗑️ 清除計算結果", help="清除儲存的計算結果", use_container_width=True):
+            del st.session_state.calc_result_to_use
+            st.success("✅ 計算結果已清除")
+            st.rerun()
 
     st.divider()
 
