@@ -167,13 +167,22 @@ def _emit_cookie_js(value: str, max_age: int = None, reload: bool = True):
     js = f"""
 <script>
 (function() {{
+  var secure = (window.location.protocol === "https:") ? "; Secure" : "";
+  var cookie = "{COOKIE_NAME}={value}{max_age_part}; Path=/; SameSite=Lax" + secure;
+  var ok = false;
   try {{
-    var doc = window.parent.document;
-    var secure = (window.parent.location.protocol === "https:") ? "; Secure" : "";
-    doc.cookie = "{COOKIE_NAME}={value}{max_age_part}; Path=/; SameSite=Lax" + secure;
+    window.parent.document.cookie = cookie;   // app document
+    ok = true;
   }} catch (e) {{
-    console.error("expense_auth cookie error", e);
+    console.error("expense_auth: parent cookie write failed", e);
   }}
+  try {{
+    document.cookie = cookie;                 // srcdoc iframe shares the app origin
+    ok = true;
+  }} catch (e) {{
+    console.error("expense_auth: iframe cookie write failed", e);
+  }}
+  if (!ok) {{ console.error("expense_auth: cookie could not be written"); }}
   {reload_part}
 }})();
 </script>
@@ -181,17 +190,19 @@ def _emit_cookie_js(value: str, max_age: int = None, reload: bool = True):
     components.html(js, height=0)
 
 
-def set_auth_cookie(user: str, remember: bool):
+def set_auth_cookie(user: str, remember: bool, reload: bool = False):
     """
-    Emit JS that sets the auth cookie and reloads the page.
-    Must only be called once, right after a successful PIN submit.
+    Emit JS that writes the auth cookie for FUTURE visits. The current
+    session is already authenticated via session_state, so no reload is
+    needed (and none is done by default): if the browser refuses the cookie
+    the user simply logs in again next time instead of looping here.
     """
     if remember:
         token = make_auth_token(user, days=REMEMBER_DAYS)
-        _emit_cookie_js(token, max_age=REMEMBER_DAYS * 86400)
+        _emit_cookie_js(token, max_age=REMEMBER_DAYS * 86400, reload=reload)
     else:
         token = make_auth_token(user, days=SESSION_ONLY_HOURS / 24)
-        _emit_cookie_js(token, max_age=None)
+        _emit_cookie_js(token, max_age=None, reload=reload)
 
 
 def refresh_auth_cookie(user: str):
@@ -232,6 +243,19 @@ def check_password():
 
     # Already authenticated in this session
     if st.session_state.get("password_correct", False):
+        # Cookie for future visits, written on the run AFTER the PIN submit so
+        # the component is actually rendered (a rerun in the submit run would
+        # discard it). Written once; failure only affects the next visit.
+        flash = st.session_state.pop("login_flash", None)
+        if flash:
+            st.success(flash)
+        pending = st.session_state.pop("auth_cookie_pending", None)
+        if pending:
+            user, remember = pending
+            set_auth_cookie(user, remember)
+            days = REMEMBER_DAYS if remember else 0
+            st.session_state["auth_exp"] = int(time.time() + (days * 86400 if remember
+                                                             else SESSION_ONLY_HOURS * 3600))
         return True
 
     # Try the signed cookie
@@ -296,19 +320,18 @@ def password_screen():
 
             # Validate PIN
             if password == FAMILY_PIN:
+                # Authenticate THIS session right away via session_state; the
+                # remember-me cookie is written on the next run (see
+                # check_password) and only matters for future visits.
                 st.session_state["password_correct"] = True
                 st.session_state["current_user"] = selected_user
-
+                st.session_state["auth_cookie_pending"] = (selected_user, bool(remember_me))
+                st.session_state["auto_login_notified"] = True
                 if remember_me:
-                    st.success(f"✅ 登入成功！已設定記住我功能 ({REMEMBER_DAYS}天)，頁面重新載入中...")
+                    st.session_state["login_flash"] = f"✅ 登入成功！歡迎 {selected_user}（{REMEMBER_DAYS} 天內免登入）"
                 else:
-                    st.success(f"✅ 登入成功！歡迎 {selected_user}，頁面重新載入中...")
-
-                # Write cookie via JS and reload; the reloaded session picks the
-                # cookie up in check_password(). Do NOT st.rerun() here — the
-                # component must render for the JS to execute.
-                set_auth_cookie(selected_user, remember_me)
-                st.stop()
+                    st.session_state["login_flash"] = f"✅ 登入成功！歡迎 {selected_user}"
+                st.rerun()
             else:
                 st.error("❌ 密碼錯誤，請重試")
                 st.session_state["password_correct"] = False
