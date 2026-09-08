@@ -33,6 +33,19 @@ A mobile-first expense tracking application built with Streamlit and Google Shee
 
 4. Access at `http://localhost:8501`
 
+## 💱 Foreign currency (外幣換算)
+
+Entries abroad can be typed in the local currency; the app converts to integer TWD
+(`金額`, the single source of truth) and stores `幣別` / `原幣金額` / `匯率` beside it.
+Rates: Frankfurter → open.er-api ("Rates By Exchange Rate API" attribution shown when
+used) → fawazahmed0 currency-api → last used rate from the sheet → static
+`config.FX_FALLBACK_RATES` (refresh occasionally; stamped by `FX_FALLBACK_DATE`).
+The rate is always editable; the add form quotes today's rate even for back-dated entries.
+The sheet needs the three optional header cells — see `DEPLOYMENT.md` Step 8 and
+`scripts/migrate_add_currency_columns.py`.
+
+Tests: `expense_env/bin/python -m pytest -q` (no network, no real sheet).
+
 ## 📱 Design Principles
 
 - **Speed First**: Make expense entry faster than opening traditional apps

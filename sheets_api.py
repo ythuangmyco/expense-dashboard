@@ -13,7 +13,9 @@ import time
 from datetime import datetime, date
 import logging
 from typing import Optional, Dict, List, Tuple, Any
-from config import SHEET_ID, WORKSHEET_GID, SHEET_URL, COLUMN_MAPPING
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from config import (SHEET_ID, WORKSHEET_GID, SHEET_URL, COLUMN_MAPPING,
+                    OPTIONAL_HEADERS, CURRENCY_META, RATE_DECIMALS)
 from helpers import parse_amount, today_local, now_local, LOCAL_TZ  # noqa: F401 (re-exported for callers)
 
 # Setup logging
@@ -24,16 +26,20 @@ logger = logging.getLogger(__name__)
 # Constants / helpers
 # ---------------------------------------------------------------------------
 
-# Expected sheet header, in sheet order (A..I)
+# Expected sheet header, in sheet order (A..I). Writes are refused when any is missing.
 EXPECTED_HEADERS = ['日期', '類型_1', '類型_2', '金額', '帳戶', '名稱', '國家', '地點', '備註']
+# Optional foreign-currency headers (幣別 / 原幣金額 / 匯率): mapped by name when present,
+# silently absent on an un-migrated sheet. OPTIONAL_HEADERS itself lives in config.py.
 # internal name -> Chinese header (reverse lookup of COLUMN_MAPPING, restricted to the real header)
-INTERNAL_TO_HEADER = {COLUMN_MAPPING[h]: h for h in EXPECTED_HEADERS}
-TEXT_FIELDS = ['description', 'category_type', 'type_1', 'account', 'country', 'location', 'notes']
+INTERNAL_TO_HEADER = {COLUMN_MAPPING[h]: h for h in EXPECTED_HEADERS + OPTIONAL_HEADERS}
+FX_FIELDS = [COLUMN_MAPPING[h] for h in OPTIONAL_HEADERS]  # ['currency', 'orig_amount', 'fx_rate']
+TEXT_FIELDS = ['description', 'category_type', 'type_1', 'account', 'country', 'location', 'notes',
+               'currency']
 DATE_FORMATS = ['%m/%d/%Y', '%Y-%m-%d', '%Y/%m/%d', '%m/%d/%y']
 SHEET_DATE_FORMAT = '%m/%d/%Y'
 EXPECTED_COLUMNS = ['date', 'type_1', 'category_type', 'amount', 'account', 'description',
-                    'country', 'location', 'notes', 'sheet_row', 'original_index',
-                    'year', 'month', 'month_year', 'weekday']
+                    'country', 'location', 'notes', 'currency', 'orig_amount', 'fx_rate',
+                    'sheet_row', 'original_index', 'year', 'month', 'month_year', 'weekday']
 RETRY_DELAYS = (1, 2, 4)
 
 
@@ -52,6 +58,32 @@ def _secret(section: str, key: Optional[str] = None, default: Any = None) -> Any
 
 def _resolve_sheet_id() -> str:
     return _secret("app", "sheet_id", SHEET_ID) or SHEET_ID
+
+
+def _resolve_worksheet_gid():
+    """Worksheet GID: [app] worksheet_gid from secrets (rehearsal on a copy), else config.WORKSHEET_GID."""
+    gid = _secret("app", "worksheet_gid", WORKSHEET_GID)
+    if gid is None or str(gid).strip() == '':
+        return WORKSHEET_GID
+    try:
+        return int(str(gid).strip())
+    except (TypeError, ValueError):
+        return gid
+
+
+def has_fx_columns(df: Optional[pd.DataFrame]) -> Optional[bool]:
+    """
+    Did the sheet the frame was loaded from carry the 幣別/原幣金額/匯率 headers?
+    Reads df.attrs only (stamped by _load_from_api/_load_from_csv) — zero API calls.
+    None = unknown (e.g. a last_good_df captured before deploy, or an empty frame).
+    """
+    if df is None:
+        return None
+    try:
+        value = df.attrs.get('fx_headers')
+    except Exception:
+        return None
+    return None if value is None else bool(value)
 
 
 def _api_error_status(exc: Exception) -> int:
@@ -86,8 +118,16 @@ def _empty_df() -> pd.DataFrame:
     df = pd.DataFrame({c: pd.Series(dtype='object') for c in EXPECTED_COLUMNS})
     df['date'] = pd.to_datetime(df['date'])
     df['amount'] = df['amount'].astype('float64')
+    df['orig_amount'] = df['orig_amount'].astype('float64')
+    df['fx_rate'] = df['fx_rate'].astype('float64')
     df['sheet_row'] = df['sheet_row'].astype('int64')
     return df
+
+
+def _fx_numeric(series: pd.Series) -> pd.Series:
+    """原幣金額 / 匯率 cells -> float64 (blank/unparseable -> NaN). Deliberately NOT parse_amount."""
+    text = series.astype(str).str.strip().str.replace(',', '', regex=False)
+    return pd.to_numeric(text, errors='coerce').astype('float64')
 
 
 def parse_dates(series: pd.Series) -> pd.Series:
@@ -155,6 +195,54 @@ def _sheet_amount_value(value: Any):
     return int(num) if float(num).is_integer() else float(num)
 
 
+def _to_decimal(value: Any) -> Optional[Decimal]:
+    """Decimal(str(value)) after stripping thousands separators; None when blank/unparseable."""
+    if isinstance(value, Decimal):
+        return None if value.is_nan() else value
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        if value != value:
+            return None
+        return Decimal(str(value))
+    text = _clean_text(value).replace(',', '')
+    if not text:
+        return None
+    try:
+        d = Decimal(text)
+    except InvalidOperation:
+        return None
+    return None if d.is_nan() or d.is_infinite() else d
+
+
+def _sheet_orig_amount_value(value: Any, currency: Any = '') -> str:
+    """原幣金額 as text with the currency's decimals (JPY/KRW 0, else 2); '' when blank."""
+    d = _to_decimal(value)
+    if d is None:
+        return ''
+    code = _clean_text(currency).upper()
+    decimals = CURRENCY_META.get(code, (2, 0.01))[0]
+    return str(d.quantize(Decimal(1).scaleb(-decimals), rounding=ROUND_HALF_UP))
+
+
+def _sheet_currency_value(value: Any) -> str:
+    """幣別 as stored: ISO code upper-cased; TWD (any case) and blanks normalise to '' (TWD-native)."""
+    code = _clean_text(value).upper()
+    return '' if code == 'TWD' else code
+
+
+def _sheet_rate_value(value: Any) -> str:
+    """匯率 as text: quantised to RATE_DECIMALS (6) dp, trailing zeros trimmed, never int-coerced."""
+    d = _to_decimal(value)
+    if d is None:
+        return ''
+    q = d.quantize(Decimal(1).scaleb(-RATE_DECIMALS), rounding=ROUND_HALF_UP)
+    text = f"{q:.{RATE_DECIMALS}f}"
+    if '.' in text:
+        text = text.rstrip('0').rstrip('.')
+    return text or '0'
+
+
 def _col_letter(n: int) -> str:
     return gspread.utils.rowcol_to_a1(1, n)[:-1]
 
@@ -175,6 +263,7 @@ class SheetsAPI:
         self.api_available = False
         self.read_only = True
         self.init_error = None
+        self.last_write_warnings: List[str] = []  # FX fields dropped by the last add/update
         self._initialize_api()
 
     def _initialize_api(self):
@@ -207,10 +296,11 @@ class SheetsAPI:
                 spreadsheet = _with_retry(self.client.open_by_key, sheet_id)
 
                 # Find worksheet by GID (no fallback to another worksheet)
+                worksheet_gid = _resolve_worksheet_gid()
                 worksheets = _with_retry(spreadsheet.worksheets)
                 logger.info(f"📋 Available worksheets: {[(ws.title, ws.id) for ws in worksheets]}")
                 for ws in worksheets:
-                    if str(ws.id) == str(WORKSHEET_GID):
+                    if str(ws.id) == str(worksheet_gid):
                         self.worksheet = ws
                         logger.info(f"✅ Found target worksheet: {ws.title}")
                         break
@@ -220,10 +310,10 @@ class SheetsAPI:
                     self.read_only = False
                     logger.info("✅ Google Sheets API initialized successfully")
                 else:
-                    self.init_error = f"找不到 GID {WORKSHEET_GID} 的工作表"
-                    logger.error(f"❌ Worksheet with GID {WORKSHEET_GID} not found; "
+                    self.init_error = f"找不到 GID {worksheet_gid} 的工作表"
+                    logger.error(f"❌ Worksheet with GID {worksheet_gid} not found; "
                                  f"available: {[(ws.title, ws.id) for ws in worksheets]}")
-                    st.error(f"❌ 找不到 GID {WORKSHEET_GID} 的工作表，已切換為唯讀模式（不會寫入其他工作表）")
+                    st.error(f"❌ 找不到 GID {worksheet_gid} 的工作表，已切換為唯讀模式（不會寫入其他工作表）")
             else:
                 self.init_error = "未設定 Google Sheets 憑證"
                 logger.info("ℹ️ No Google Sheets credentials found, using CSV fallback")
@@ -275,7 +365,7 @@ class SheetsAPI:
             errors.append(f"CSV 備用方案失敗: {str(e)}")
 
         if not self.api_available:
-            hint = self.init_error or f"請確認工作表 GID {WORKSHEET_GID} 存在且可訪問"
+            hint = self.init_error or f"請確認工作表 GID {_resolve_worksheet_gid()} 存在且可訪問"
             errors.append(f"Google Sheets API 不可用 ({hint})")
 
         raise RuntimeError("；".join(errors) if errors else "所有資料載入方法均失敗")
@@ -311,8 +401,11 @@ class SheetsAPI:
         df = pd.DataFrame(data_rows, columns=clean_headers)
         logger.info(f"📊 Raw DataFrame shape: {df.shape}")
 
-        # Clean and process the data
-        return self._process_data(df, source="api")
+        # Clean and process the data; remember whether the FX headers exist (from the
+        # header row already in hand — no extra API call, see has_fx_columns()).
+        out = self._process_data(df, source="api")
+        out.attrs['fx_headers'] = all(h in headers for h in OPTIONAL_HEADERS)
+        return out
 
     def _load_from_csv(self) -> pd.DataFrame:
         """Load data from CSV export as fallback (raises on failure)"""
@@ -321,8 +414,9 @@ class SheetsAPI:
         # Construct CSV URL with specific GID
         csv_url = SHEET_URL
         sheet_id = _resolve_sheet_id()
-        if sheet_id and sheet_id != SHEET_ID:
-            csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={WORKSHEET_GID}"
+        worksheet_gid = _resolve_worksheet_gid()
+        if (sheet_id and sheet_id != SHEET_ID) or str(worksheet_gid) != str(WORKSHEET_GID):
+            csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={worksheet_gid}"
 
         logger.info(f"📄 CSV URL: {csv_url}")
 
@@ -365,7 +459,9 @@ class SheetsAPI:
             new_columns.append(fixed)
         df.columns = new_columns
 
-        return self._process_data(df, source="csv")
+        out = self._process_data(df, source="csv")
+        out.attrs['fx_headers'] = all(h in new_columns for h in OPTIONAL_HEADERS)
+        return out
 
     def _process_data(self, df: pd.DataFrame, source: str) -> pd.DataFrame:
         """
@@ -399,6 +495,16 @@ class SheetsAPI:
                     df[field] = df[field].map(_clean_text)
                 else:
                     df[field] = ''
+
+            # 幣別: ISO code upper-cased; 'TWD' and blank both mean a TWD-native row
+            df['currency'] = df['currency'].map(lambda s: '' if s.upper() == 'TWD' else s.upper())
+
+            # 原幣金額 / 匯率: plain numerics (NOT parse_amount, which strips NT$/TWD and int-coerces)
+            for field in ('orig_amount', 'fx_rate'):
+                if field in df.columns:
+                    df[field] = _fx_numeric(df[field])
+                else:
+                    df[field] = pd.Series(float('nan'), index=df.index, dtype='float64')
 
             # Amount: tolerant parse ('26,495.00', 'NT$1,200'); unparseable -> NaN (consumers decide)
             if 'amount' in df.columns:
@@ -452,15 +558,16 @@ class SheetsAPI:
             st.info("💡 請確認已在 Streamlit Cloud 設定 secrets，或本地設定 service account 金鑰")
             return False
         if self.worksheet is None:
-            st.error(f"❌ 無法連接到工作表 (GID {WORKSHEET_GID})")
+            st.error(f"❌ 無法連接到工作表 (GID {_resolve_worksheet_gid()})")
             st.info("💡 請確認 Google Sheet 已與 service account 共用，且有編輯權限")
             return False
         return True
 
     def _header_map(self) -> Optional[Tuple[Dict[str, int], int]]:
         """
-        Read the header row and map internal column names -> 0-based column index.
-        Returns (map, header_width) or None (with st.error) if the 9 expected headers are missing.
+        Read the header row (ONE row_values(1) call) and map internal column names -> 0-based index.
+        The 9 EXPECTED_HEADERS are required (any order); the OPTIONAL_HEADERS (幣別/原幣金額/匯率)
+        are mapped only when present. Returns (map, header_width) or None (with st.error).
         """
         header = [str(h).strip() for h in _with_retry(self.worksheet.row_values, 1)]
         missing = [h for h in EXPECTED_HEADERS if h not in header]
@@ -468,16 +575,44 @@ class SheetsAPI:
             logger.error(f"❌ Sheet header missing expected columns {missing}: {header}")
             st.error(f"❌ 工作表標題列缺少欄位 {missing}，為避免寫錯欄位已取消操作")
             return None
-        return {COLUMN_MAPPING[h]: header.index(h) for h in EXPECTED_HEADERS}, len(header)
+        header_map = {COLUMN_MAPPING[h]: header.index(h) for h in EXPECTED_HEADERS}
+        for h in OPTIONAL_HEADERS:
+            if h in header:
+                header_map[COLUMN_MAPPING[h]] = header.index(h)
+        return header_map, len(header)
 
     @staticmethod
-    def _cell_value(field: str, value: Any):
+    def _cell_value(field: str, value: Any, currency: Any = ''):
+        """
+        Value to write for one cell. Dates -> MM/DD/YYYY, 金額 -> number, FX cells -> text:
+        幣別 upper-cased with TWD -> '' (TWD-native), 原幣金額 with the currency's decimals,
+        匯率 at 6 dp trimmed (never int-coerced).
+        """
         if field == 'date':
             return _format_sheet_date(value)
         if field == 'amount':
             num = _sheet_amount_value(value)
             return '' if num is None else num
+        if field == 'currency':
+            return _sheet_currency_value(value)
+        if field == 'orig_amount':
+            return _sheet_orig_amount_value(value, currency)
+        if field == 'fx_rate':
+            return _sheet_rate_value(value)
         return _clean_text(value)
+
+    def _note_dropped_fx(self, header_map: Dict[str, int], data: Dict) -> None:
+        """Record (in last_write_warnings) FX fields the caller supplied that the sheet cannot hold."""
+        for field in FX_FIELDS:
+            if field in header_map or field not in data:
+                continue
+            value = _clean_text(data.get(field))
+            if value == '' or (field == 'currency' and value.upper() == 'TWD'):
+                continue  # TWD-native rows carry nothing the sheet needs
+            header = INTERNAL_TO_HEADER[field]
+            msg = f"工作表沒有「{header}」欄位，已略過 {header}={value}"
+            logger.warning(f"⚠️ {msg}")
+            self.last_write_warnings.append(msg)
 
     @staticmethod
     def _row_matches(row: List[str], header_map: Dict[str, int], original: Dict) -> bool:
@@ -567,6 +702,7 @@ class SheetsAPI:
         Returns True if successful, False otherwise
         """
         logger.info(f"🔍 Attempting to add expense: {expense_data}")
+        self.last_write_warnings = []
         if not self._check_writable():
             return False
 
@@ -576,9 +712,17 @@ class SheetsAPI:
                 return False
             header_map, width = hm
 
+            expense_data = dict(expense_data)
+            currency = _sheet_currency_value(expense_data.get('currency', ''))
+            if currency == '':
+                # TWD-native (blank or 'TWD'): invariant currency == '' ⇒ 原幣金額/匯率 blank
+                expense_data['orig_amount'] = ''
+                expense_data['fx_rate'] = ''
             row_data = [''] * width
             for field, idx in header_map.items():
-                row_data[idx] = self._cell_value(field, expense_data.get(field, ''))
+                row_data[idx] = self._cell_value(field, expense_data.get(field, ''), currency)
+            # Un-migrated sheet: the TWD row is still written; FX fields are dropped and reported
+            self._note_dropped_fx(header_map, expense_data)
 
             logger.info(f"📝 Row data to append: {row_data}")
             _with_retry(self.worksheet.append_row, row_data)
@@ -597,7 +741,11 @@ class SheetsAPI:
         """
         Update an existing expense record identified by its sheet row, after verifying
         that the row still holds `original`. Only columns present in `updated` are changed.
+        FX cells: passing currency='' or 'TWD' (幣別 -> TWD-native) writes an explicit '' into
+        幣別/原幣金額/匯率 (when those columns exist); omitting the FX keys leaves the stored FX
+        cells untouched.
         """
+        self.last_write_warnings = []
         if not self._check_writable():
             return False
 
@@ -614,13 +762,26 @@ class SheetsAPI:
             row_number = int(row_number)
 
             new_row = _pad(current, width)[:width]
+            updated = dict(updated)
+            if 'currency' in updated and _sheet_currency_value(updated['currency']) == '':
+                # 幣別 -> TWD ('' or 'TWD'): the invariant currency == '' ⇒ 原幣金額/匯率 blank must hold
+                updated['currency'] = ''
+                updated['orig_amount'] = ''
+                updated['fx_rate'] = ''
+            if 'currency' in updated:
+                currency = updated['currency']
+            elif 'currency' in header_map:
+                currency = new_row[header_map['currency']]
+            else:
+                currency = ''
             for field, value in updated.items():
                 if field not in header_map:
                     continue
                 if field == 'amount' and _sheet_amount_value(value) is None:
                     st.error("❌ 金額無法解析，已取消更新")
                     return False
-                new_row[header_map[field]] = self._cell_value(field, value)
+                new_row[header_map[field]] = self._cell_value(field, value, currency)
+            self._note_dropped_fx(header_map, updated)
 
             range_name = f"A{row_number}:{_col_letter(width)}{row_number}"
             logger.info(f"📝 Updating sheet row {row_number} ({range_name}): {new_row}")
@@ -676,7 +837,7 @@ class SheetsAPI:
             "read_only": self.read_only,
             "worksheet_connected": self.worksheet is not None,
             "sheet_id": _resolve_sheet_id(),
-            "worksheet_gid": WORKSHEET_GID,
+            "worksheet_gid": _resolve_worksheet_gid(),
             "error": self.init_error,
         }
 

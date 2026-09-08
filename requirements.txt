@@ -1,5 +1,5 @@
 # Core Framework
-streamlit>=1.37.0  # st.context.cookies (auth cookie)
+streamlit>=1.55,<2  # segmented_control, pills, popover, badge, metric chart_data, st.context.cookies
 
 # Data Processing
 pandas>=2.0.0

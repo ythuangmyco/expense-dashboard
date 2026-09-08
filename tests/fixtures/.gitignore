@@ -1,0 +1,3 @@
+# Re-include the FX fixture payloads: the repo root .gitignore ignores *.json
+# (service-account keys). Nested rules override parent rules for this directory.
+!*.json

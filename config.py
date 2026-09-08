@@ -33,6 +33,11 @@ COLUMN_MAPPING = {
     '地點': 'location',
     '備註': 'notes',
 
+    # Optional foreign-currency columns (added 2026-09; blank = TWD-native row)
+    '幣別': 'currency',
+    '原幣金額': 'orig_amount',
+    '匯率': 'fx_rate',
+
     # Additional possible amount column names
     'Amount': 'amount',
     'amount': 'amount',
@@ -123,3 +128,61 @@ COLORS = {
     "background": "#F8F9FA",
     "text": "#2C3E50"
 }
+
+# ---------------------------------------------------------------------------
+# Foreign-currency conversion (外幣換算). See PLAN_fx_and_overview.md §2.
+# ---------------------------------------------------------------------------
+from decimal import Decimal  # noqa: E402
+
+# Optional sheet headers (written by name, after the 9 required ones)
+OPTIONAL_HEADERS = ["幣別", "原幣金額", "匯率"]
+
+# Default currency per 國家 (use .get(country, "TWD"))
+COUNTRY_CURRENCY = {
+    "台灣": "TWD", "日本": "JPY", "澳洲": "AUD", "加拿大": "CAD",
+    "韓國": "KRW", "新加坡": "SGD", "馬來西亞": "MYR",
+}
+CURRENCY_OPTIONS = ["TWD", "SGD", "MYR", "JPY", "KRW", "AUD", "CAD", "USD", "EUR"]
+# code -> (decimals shown/stored for the original amount, number_input step)
+CURRENCY_META = {
+    "TWD": (0, 1.0), "JPY": (0, 1.0), "KRW": (0, 1.0),
+    "SGD": (2, 0.01), "MYR": (2, 0.01), "AUD": (2, 0.01), "CAD": (2, 0.01),
+    "USD": (2, 0.01), "EUR": (2, 0.01),
+}
+RATE_DECIMALS = 6                 # 匯率 stored with 6 dp for every currency
+CARD_FX_FEE = Decimal("0.015")    # optional 信用卡結匯 surcharge
+FX_TIMEOUT_S = 3                  # per-endpoint HTTP timeout
+FX_TTL_H = 12                     # a fetched quote is reused for this long
+FX_NEG_CACHE_MIN = 10             # after a failed chain, do not retry for this long
+FX_ENDPOINTS = {
+    "frankfurter": "https://api.frankfurter.dev/v2/rates",
+    "erapi": "https://open.er-api.com/v6/latest/{ccy}",
+    "fawaz_cdn": "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@{date}/v1/currencies/{ccy}.min.json",
+    "fawaz_pages": "https://{date}.currency-api.pages.dev/v1/currencies/{ccy}.min.json",
+}
+# Last-resort static rates: TWD per 1 unit. Refresh occasionally (see DEPLOYMENT.md).
+FX_FALLBACK_DATE = "2026-09-08"
+FX_FALLBACK_RATES = {
+    "USD": 31.54, "SGD": 24.91, "MYR": 7.79, "JPY": 0.2035, "KRW": 0.02345,
+    "AUD": 22.77, "CAD": 22.84, "EUR": 36.66,
+}
+
+# ---------------------------------------------------------------------------
+# 總覽 (overview) settings. See PLAN_fx_and_overview.md §3.
+# ---------------------------------------------------------------------------
+OVERVIEW_PERIODS = ["今天", "本週", "本月", "本年", "更多…"]
+OVERVIEW_MORE_PERIODS = ["上月", "最近7天", "最近30天", "全部"]
+COMPARISON_LABEL = {
+    "今天": "昨天", "本週": "上週同期", "本月": "上月同期", "上月": "前一個月",
+    "本年": "去年同期", "最近7天": "前 7 天", "最近30天": "前 30 天",
+    "自訂範圍": "前一段同長期間", "全部": None, "旅行": None,
+}
+# Display-time only: raw sheet values are never rewritten
+CATEGORY_ALIASES = {"📱通信": "📱 通信"}
+COUNTRY_FLAG = {
+    "台灣": "🇹🇼", "日本": "🇯🇵", "澳洲": "🇦🇺", "加拿大": "🇨🇦", "韓國": "🇰🇷",
+    "新加坡": "🇸🇬", "馬來西亞": "🇲🇾",
+}
+TRIP_GAP_DAYS = 3                 # split trips in the same country on gaps longer than this
+TRIP_PREBOOK_WINDOW_DAYS = 180    # 旅行 rows with 國家=台灣 attach to the next trip within this window
+TRIP_ACTIVE_GRACE_DAYS = 3        # a trip whose last row is within this many days counts as active

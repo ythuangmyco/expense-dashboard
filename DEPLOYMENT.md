@@ -243,3 +243,42 @@ If you need more features:
 🎉 **Your Family Expense Dashboard is now live!**
 
 The mobile-first design ensures family members can quickly log expenses in under 10 seconds, making this more convenient than traditional expense apps.
+## 💱 Step 8: Foreign-currency columns migration (幣別 / 原幣金額 / 匯率)
+
+The converter stores three **optional** header cells next to the 9 required ones
+(live tab `new_to_fill`, gid `453361449`, header `A1:I1`, grid 26 columns wide).
+`scripts/migrate_add_currency_columns.py` writes them by name into the first empty
+header cells after the last used column (`J1:L1` today), RAW, header row only.
+It refuses to run if a required name is missing, the target cells are not empty,
+or the FX names are only partially present; re-running on a migrated sheet is a no-op.
+
+**Deploy order: code first, then migrate.** The loader/writer tolerate both the
+9-column and the 12-column sheet, so the app must already be on the FX-aware build
+before the headers appear.
+
+1. **Rehearse on the copy tab** `Copy of new_to_fill` (gid `1290819173`, same spreadsheet).
+   In local `.streamlit/secrets.toml` add under `[app]`:
+   ```toml
+   worksheet_gid = 1290819173
+   ```
+   (The app honours the same key, so `streamlit run app.py` now reads/writes the copy.)
+2. Dry run, then run:
+   ```bash
+   expense_env/bin/python scripts/migrate_add_currency_columns.py --dry-run
+   expense_env/bin/python scripts/migrate_add_currency_columns.py
+   ```
+   Expected output: `target cells: J1:L1 (J, K, L)` and the resulting header row
+   ending in `幣別, 原幣金額, 匯率`.
+3. Verify on the copy: row 1 gains the three names, rows 2..N are unchanged; in the app
+   add / edit / delete one SGD entry, then 🔄 重新整理.
+4. **Live run:** remove `worksheet_gid` from the secrets (defaults to `453361449`) and run
+   the same two commands. Explicit flags work too:
+   `--sheet-id ID --worksheet-gid 453361449 --service-account key.json`.
+5. Verify live as in step 3; each phone user taps 🔄 重新整理 once.
+
+**Rollback:** clear the three header cells (find them by name, `J1:L1` today) — the code
+tolerates their absence and falls back to TWD-only writes with a warning. Do not delete
+the columns while rows below them hold values.
+
+Exit codes: `0` done / already migrated, `1` refused (nothing written), `2` usage or
+connection error. The script never touches data rows.
