@@ -8,22 +8,28 @@ import time
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date
-from typing import Dict, List, Optional, Tuple
+from decimal import Decimal, ROUND_HALF_UP
+from typing import Dict, List, NamedTuple, Optional, Tuple
 from config import (
     TYPE_1_OPTIONS, CATEGORIES, ACCOUNTS, LOCATIONS_MAP,
-    DEFAULT_TYPE_1, DEFAULT_COUNTRY, DEFAULT_LOCATION, DEFAULT_ACCOUNT
+    DEFAULT_TYPE_1, DEFAULT_COUNTRY, DEFAULT_LOCATION, DEFAULT_ACCOUNT,
+    COUNTRY_CURRENCY, CURRENCY_OPTIONS, CURRENCY_META,
 )
-from helpers import parse_amount, today_local
+import fx
+from helpers import parse_amount, today_local, to_twd, q6, fmt_orig
 from sheets_api import get_sheets_api
 from auth import get_current_user
 
 
 # Quick entry section removed as requested
 
-# Seconds during which an identical (date, account, description, amount)
-# payload is treated as an accidental double submission.
+# Seconds during which an identical (date, account, description, amount,
+# currency, orig_amount) payload is treated as an accidental double submission.
 DUPLICATE_SUBMIT_WINDOW = 120
 EMPTY_LABEL = "（空白）"
+FX_HELP_FIRST_USE = "輸入後點空白處即更新台幣"
+FX_MISSING_COLUMNS_CAPTION = "⚠️ 工作表尚未新增幣別欄位"
+FX_DROPPED_WARNING = "⚠️ 工作表尚未有 幣別/原幣金額/匯率 欄位，此筆只儲存了台幣金額"
 
 
 def _text(value) -> str:
@@ -98,6 +104,297 @@ def _country_location_selectors(key_prefix: str, stored_country: Optional[str] =
             key=f"{key_prefix}_location_{country}",
         )
     return country, location
+
+
+# ---------------------------------------------------------------------------
+# 💱 外幣換算 card (PLAN_fx_and_overview.md §2.2 / §2.5)
+# ---------------------------------------------------------------------------
+class FxStored(NamedTuple):
+    """FX cells of an existing row as loaded ('' / None = TWD-native)."""
+    currency: str
+    orig_amount: Optional[float]
+    fx_rate: Optional[float]
+    amount: Optional[float]          # stored 金額 (for 保留原台幣金額 / 帳單金額)
+
+
+class FxState(NamedTuple):
+    """Result of an active conversion. ``orig_amount``/``twd`` are None until an amount is typed."""
+    currency: str
+    orig_amount: Optional[Decimal]
+    rate_eff: Optional[Decimal]      # the rate actually used/stored (fee folded in, 6 dp)
+    twd: Optional[int]
+    quote: Optional[fx.Quote]
+    fee_on: bool
+    keep_twd: bool = False           # edit: 保留原台幣金額 applied
+    statement: Optional[int] = None  # edit: 帳單金額 applied
+
+
+def _fx_float(value) -> Optional[float]:
+    """Numeric FX cell (orig_amount / fx_rate) as float, None when blank/NaN/unparseable."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    try:
+        num = float(str(value).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+    return None if num != num else num
+
+
+def _fmt_rate(rate) -> str:
+    """6-dp Decimal rendered without trailing zeros: 25.281600 -> '25.2816'."""
+    try:
+        d = q6(rate)
+    except ValueError:
+        return "?"
+    text = f"{d:.6f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _has_fx_columns(df) -> Optional[bool]:
+    """sheets_api.has_fx_columns via the module (tolerates stubbed sheets_api in tests)."""
+    import sheets_api as _sa
+    fn = getattr(_sa, "has_fx_columns", None)
+    if fn is None:
+        return None
+    try:
+        return fn(df)
+    except Exception:
+        return None
+
+
+def _fx_refresh_callback(currency: str, on_date, rate_key: str, flag_key: str,
+                        fresh_key: str, df=None) -> None:
+    """
+    ↻ 重新取得匯率 (on_click, runs before the rerun): evict the cached quote,
+    fetch a fresh one and ASSIGN it to the 匯率 widget's session_state key.
+
+    Deleting the key is not enough: the widget keeps its identity, so the
+    browser keeps the user's override and sends it back on the next rerun
+    (the preview would show the fresh rate while the save used the old one).
+    An assignment is flagged ``value_changed`` -> the proto carries
+    ``set_value`` and the frontend adopts the fresh rate.
+    The fresh Quote is stashed under ``fresh_key`` so the rerun renders it
+    as ✅ live instead of re-reading it from the cache as 🕒.
+    """
+    fx.invalidate(currency, on_date)
+    quote = fx.get_quote(currency, on_date, df=df)
+    if quote is not None:
+        st.session_state[rate_key] = float(quote.rate)
+        st.session_state[fresh_key] = quote
+    elif rate_key in st.session_state:
+        del st.session_state[rate_key]
+    st.session_state[flag_key] = True
+
+
+def _fx_block(kp: str, country: str, gen: int, *, stored: Optional[FxStored] = None,
+              on_date, show_statement: bool = False, df=None) -> Optional[FxState]:
+    """
+    The 💱 外幣換算 card. Everything here lives OUTSIDE st.form so each change
+    reruns immediately and the ≈ NT$ preview follows the typed amount.
+
+    Add form (stored is None), widget keys per plan §2.2:
+      {kp}_currency_{country} · {kp}_fx_amount_{gen} · {kp}_fx_rate_{ccy}_{quote_date}
+      {kp}_fx_fee_{country} · {kp}_fx_refresh
+    Edit form (stored given; ``gen`` is the sheet row), keys per plan §2.5:
+      {kp}_currency_{row} · {kp}_fx_amount_{row} · {kp}_fx_rate_{row}_{ccy}
+      {kp}_fx_fee_{row} · {kp}_keep_twd_{row} · {kp}_stmt_{row} · {kp}_fx_refresh_{row}
+
+    Returns None when no conversion is active (幣別 = TWD): no FX widget beyond
+    the 幣別 selectbox is instantiated and fx.get_quote is never called.
+    Add form, 國家 with no foreign currency (台灣): returns None BEFORE any
+    widget — the domestic path has zero new widgets (§2.1). A domestic
+    foreign-currency purchase is entered via the 編輯 opt-in card instead.
+    """
+    edit = stored is not None
+    tok = gen
+    on_date = on_date or today_local()
+
+    default_ccy = COUNTRY_CURRENCY.get(country, "TWD")
+    if edit and stored.currency:
+        default_ccy = stored.currency            # G4: stored currency wins over 國家
+    if not edit and default_ccy == "TWD":
+        return None
+    options = [default_ccy] + [c for c in CURRENCY_OPTIONS if c != default_ccy]
+    if "TWD" not in options:
+        options.append("TWD")
+    ccy_key = f"{kp}_currency_{tok}" if edit else f"{kp}_currency_{country}"
+    currency = st.selectbox("幣別 💱", options=options, index=0, key=ccy_key,
+                            help="TWD = 直接輸入台幣金額")
+    if not currency or currency == "TWD":
+        return None
+
+    decimals, step = CURRENCY_META.get(currency, (2, 0.01))
+    amount_key = f"{kp}_fx_amount_{tok}"
+    fee_key = f"{kp}_fx_fee_{tok}" if edit else f"{kp}_fx_fee_{country}"
+    flag_key = f"{kp}_fx_want_quote_{tok}"
+    fresh_key = f"{kp}_fx_fresh_quote_{tok}"
+
+    # ---- 原幣金額 --------------------------------------------------------
+    stored_orig = stored.orig_amount if edit else None
+    if stored_orig is not None and stored.currency == currency:
+        amount_default = round(float(stored_orig), decimals)
+    else:
+        amount_default = None
+    orig_widget = st.number_input(
+        f"原幣金額 ({currency})",
+        min_value=0.0,
+        step=float(step),
+        value=amount_default,
+        format=f"%.{decimals}f",
+        placeholder="請輸入原幣金額...",
+        key=amount_key,
+    )
+    if orig_widget is None:
+        st.caption(FX_HELP_FIRST_USE)
+
+    # ---- quote (only when the stored rate cannot seed the widget) ---------
+    stored_rate = stored.fx_rate if (edit and stored.currency == currency) else None
+    if stored_rate is not None and stored_rate <= 0:
+        stored_rate = None
+    want_quote = (stored_rate is None) or bool(st.session_state.get(flag_key, False))
+    # A quote fetched by the ↻ callback is consumed exactly once (this rerun).
+    quote = st.session_state.pop(fresh_key, None)
+    if not isinstance(quote, fx.Quote) or quote.currency != currency:
+        quote = None
+    if quote is None and want_quote:
+        with st.spinner("取得匯率中…"):
+            quote = fx.get_quote(currency, on_date, df=df)
+
+    if edit:
+        rate_key = f"{kp}_fx_rate_{tok}_{currency}"
+    else:
+        quote_date = quote.as_of.isoformat() if quote is not None else on_date.isoformat()
+        rate_key = f"{kp}_fx_rate_{currency}_{quote_date}"
+    if quote is not None:
+        rate_default = float(quote.rate)
+    elif stored_rate is not None:
+        rate_default = float(q6(stored_rate))
+    else:
+        rate_default = None
+
+    preview = st.container()          # ≈ NT$ metric + caption render above 進階
+
+    with st.expander("▸ 進階", expanded=False):
+        rate_widget = st.number_input(
+            f"匯率 (1 {currency} = ? TWD)",
+            min_value=0.0,
+            step=0.000001,
+            value=rate_default,
+            format="%.6f",
+            placeholder="請輸入匯率...",
+            key=rate_key,
+        )
+        fee_on = bool(st.toggle("信用卡結匯 +1.5%", key=fee_key))
+        st.button(
+            "↻ 重新取得匯率",
+            key=f"{kp}_fx_refresh_{tok}" if edit else f"{kp}_fx_refresh",
+            on_click=_fx_refresh_callback,
+            args=(currency, on_date, rate_key, flag_key, fresh_key, df),
+        )
+
+    keep_twd = False
+    statement = None
+    if edit and show_statement:
+        if stored.amount is not None:
+            keep_twd = bool(st.checkbox(
+                "保留原台幣金額（反推匯率）",
+                value=(not stored.currency),      # back-fill case: totals never move
+                key=f"{kp}_keep_twd_{tok}",
+                help="金額不變，匯率 = 金額 ÷ 原幣金額",
+            ))
+        stmt_widget = st.number_input(
+            "💳 帳單金額 (TWD)",
+            min_value=0.0,
+            step=1.0,
+            value=None,
+            format="%.0f",
+            placeholder="對帳後的台幣金額（選填）",
+            key=f"{kp}_stmt_{tok}",
+            help="輸入信用卡帳單上的台幣金額，匯率會自動反推",
+        )
+        if stmt_widget is not None and stmt_widget > 0:
+            statement = int(round(float(stmt_widget)))
+
+    # ---- arithmetic (never re-seeds a widget from session_state) ----------
+    orig_amount = None
+    if orig_widget is not None and orig_widget > 0:
+        orig_amount = Decimal(str(orig_widget)).quantize(Decimal(1).scaleb(-decimals), rounding=ROUND_HALF_UP)
+
+    rate_eff = None
+    if rate_widget is not None and rate_widget > 0:
+        rate_eff = fx.effective_rate(rate_widget, fee_on)
+
+    twd = None
+    if orig_amount is not None:
+        if statement is not None:                       # rule (i): 帳單金額
+            rate_eff = q6(Decimal(statement) / orig_amount)
+            twd = statement
+            keep_twd = False
+        elif keep_twd and stored.amount is not None:    # rule (ii): 保留原台幣金額
+            rate_eff = q6(Decimal(str(stored.amount)) / orig_amount)
+            twd = int(round(float(stored.amount)))
+        elif rate_eff is not None:                      # rule (iii): from the 6-dp rate
+            twd = to_twd(orig_amount, rate_eff, decimals)
+
+    with preview:
+        if twd is not None:
+            st.metric("≈ 台幣 (TWD)", f"NT${twd:,}")
+        else:
+            st.metric("≈ 台幣 (TWD)", "NT$ —")
+        parts = []
+        if rate_eff is not None:
+            derived = statement is not None or (keep_twd and orig_amount is not None)
+            parts.append(f"匯率 {_fmt_rate(rate_eff)}" + ("（含手續費）" if fee_on and not derived else ""))
+        if statement is not None:
+            parts.append("💳 依帳單金額反推")
+        elif keep_twd and orig_amount is not None:
+            parts.append("🔒 保留原台幣金額")
+        elif quote is not None:
+            parts.append(fx.freshness_caption(quote))
+        elif stored_rate is not None:
+            parts.append("💾 已儲存的匯率")
+        else:
+            parts.append(fx.freshness_caption(None))
+        st.caption(" · ".join(parts))
+
+    return FxState(currency, orig_amount, rate_eff, twd, quote, fee_on, keep_twd, statement)
+
+
+def _fx_amount_info(state: FxState) -> None:
+    """In-form replacement for the 金額 widget while a conversion is active."""
+    if state.twd is not None and state.orig_amount is not None:
+        st.info(f"金額 (TWD)：NT${state.twd:,} ← {fmt_orig(state.currency, state.orig_amount)}"
+                f" × {_fmt_rate(state.rate_eff)}")
+    elif state.orig_amount is None:
+        st.info(f"金額 (TWD)：請先在上方輸入原幣金額 ({state.currency})")
+    else:
+        st.info("金額 (TWD)：匯率無效，請在「▸ 進階」輸入匯率")
+
+
+def _fx_validation_error(state: FxState) -> Optional[str]:
+    if state.orig_amount is None or state.orig_amount <= 0:
+        return "請輸入原幣金額"
+    if state.rate_eff is None or state.rate_eff <= 0 or state.twd is None:
+        return "匯率無效"
+    return None
+
+
+def _write_warnings(api) -> List[str]:
+    warnings = getattr(api, "last_write_warnings", None)
+    if isinstance(warnings, (list, tuple)):
+        return [str(w) for w in warnings if w]
+    return []
+
+
+def _sheet_currency(value) -> str:
+    """幣別 as loaded: upper-cased ISO code; TWD/blank -> ''."""
+    code = _text(value).upper()
+    return "" if code == "TWD" else code
 
 
 def smart_suggestions(df: pd.DataFrame, category_type: str = None) -> Dict:
@@ -176,6 +473,8 @@ def expense_input_form(df: pd.DataFrame) -> bool:
     flash = st.session_state.pop("add_expense_flash", None)
     if flash:
         st.success(flash)
+    for warn in st.session_state.pop("add_expense_warnings", None) or []:
+        st.warning(warn)
 
     # Generation counter: bumped after a confirmed successful write so the
     # in-form widgets get fresh keys (= reset) without clear_on_submit.
@@ -206,6 +505,12 @@ def expense_input_form(df: pd.DataFrame) -> bool:
     st.caption("📍 地點資訊")
     country, location = _country_location_selectors("add")
 
+    # 💱 外幣換算 card (outside the form). None when 國家=台灣 (no widget at
+    # all) or 幣別=TWD: no FX widgets, no network. Quotes today's rate (§2.3).
+    fx_state = _fx_block("add", country, gen, on_date=today_local(), df=df)
+    if fx_state is not None and _has_fx_columns(df) is False:
+        st.caption(FX_MISSING_COLUMNS_CAPTION)
+
     with st.form(f"expense_form_{gen}"):
         # First row: Date and Account
         col1, col2 = st.columns(2)
@@ -233,16 +538,21 @@ def expense_input_form(df: pd.DataFrame) -> bool:
                 key=f"add_account_{gen}",
             )
 
-        # Amount input (empty by default)
-        amount = st.number_input(
-            "金額 💰",
-            min_value=0,
-            step=10,
-            value=None,
-            placeholder="請輸入金額...",
-            help="支出金額",
-            key=f"add_amount_{gen}",
-        )
+        # Amount input (empty by default). In FX mode the keyed widget is
+        # simply not instantiated; 金額 is the converted TWD figure.
+        if fx_state is None:
+            amount = st.number_input(
+                "金額 💰",
+                min_value=0,
+                step=10,
+                value=None,
+                placeholder="請輸入金額...",
+                help="支出金額",
+                key=f"add_amount_{gen}",
+            )
+        else:
+            _fx_amount_info(fx_state)
+            amount = fx_state.twd
 
         # Show amount suggestions as text only
         if suggestions["amounts"]:
@@ -254,7 +564,7 @@ def expense_input_form(df: pd.DataFrame) -> bool:
                         safe_amounts.append(f'NT${int(float(amt))}')
                     except Exception:
                         safe_amounts.append(f'NT${amt}')
-                st.caption(f"💡 常用金額: {', '.join(safe_amounts)}")
+                st.caption("💡 常用金額: " + ", ".join(a.replace("$", "\\$") for a in safe_amounts))
             except Exception:
                 st.caption("💡 常用金額建議暫時無法顯示")
 
@@ -297,6 +607,11 @@ def expense_input_form(df: pd.DataFrame) -> bool:
         st.error("請填寫支出描述")
         return False
 
+    if fx_state is not None:
+        fx_error = _fx_validation_error(fx_state)
+        if fx_error:
+            st.error(fx_error)
+            return False
     if amount is None or amount <= 0:
         st.error("請填寫有效的金額")
         return False
@@ -305,9 +620,16 @@ def expense_input_form(df: pd.DataFrame) -> bool:
         st.error("請選擇記帳帳戶")
         return False
 
+    currency = fx_state.currency if fx_state is not None else ""
+    orig_amount_str = str(fx_state.orig_amount) if fx_state is not None else ""
+    fx_rate_str = str(fx_state.rate_eff) if fx_state is not None else ""
+
     # Duplicate-submission guard: the signature of the last SUCCESSFUL write
     # persists across runs; an identical payload within the window is refused.
-    signature = (expense_date.isoformat(), account, description, float(amount))
+    # orig_amount is part of it so two SGD amounts rounding to the same NT$
+    # are not mistaken for a double tap.
+    signature = (expense_date.isoformat(), account, description, float(amount),
+                 currency, orig_amount_str)
     last = st.session_state.get("last_expense_submit")
     if last and last[0] == signature and (time.time() - last[1]) < DUPLICATE_SUBMIT_WINDOW:
         st.warning("⚠️ 相同的支出剛剛已儲存，請勿重複提交")
@@ -323,14 +645,26 @@ def expense_input_form(df: pd.DataFrame) -> bool:
         "description": description,
         "country": country,
         "location": location,
-        "notes": notes
+        "notes": notes,
+        # '' for TWD-native rows: the API keeps 幣別/原幣金額/匯率 blank
+        "currency": currency,
+        "orig_amount": orig_amount_str,
+        "fx_rate": fx_rate_str,
     }
 
     success = api.add_expense(expense_data)
 
     if success:
         st.session_state["last_expense_submit"] = (signature, time.time())
-        st.session_state["add_expense_flash"] = f"✅ 成功新增支出: {description} - NT${amount:,.0f}"
+        if fx_state is not None:
+            flash_msg = (f"✅ 成功新增支出: {description} - "
+                         f"{fmt_orig(currency, fx_state.orig_amount)} ≈ NT${amount:,.0f}")
+        else:
+            flash_msg = f"✅ 成功新增支出: {description} - NT${amount:,.0f}"
+        st.session_state["add_expense_flash"] = flash_msg
+        dropped = _write_warnings(api)
+        if dropped:
+            st.session_state["add_expense_warnings"] = [FX_DROPPED_WARNING] + dropped
         st.session_state["add_form_gen"] = gen + 1  # reset in-form fields on the next run
         st.cache_data.clear()
         st.rerun()
@@ -365,7 +699,12 @@ def _record_label(row) -> str:
     desc = full_desc[:20] + ('...' if len(full_desc) > 20 else '')
     amount = parse_amount(row.get('amount'))
     amount_str = f"NT${amount:,.0f}" if amount is not None else "NT$?"
-    return f"{date_str} - {desc} - {amount_str} (#row {int(row['sheet_row'])})"
+    fx_suffix = ""
+    currency = _text(row.get('currency', '')).upper()
+    if currency and currency != "TWD":
+        orig_label = fmt_orig(currency, _fx_float(row.get('orig_amount')))
+        fx_suffix = f" · {orig_label}" if orig_label else f" · {currency}"
+    return f"{date_str} - {desc} - {amount_str}{fx_suffix} (#row {int(row['sheet_row'])})"
 
 
 def edit_expense_form(df: pd.DataFrame) -> bool:
@@ -387,6 +726,8 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
     flash = st.session_state.pop("edit_expense_flash", None)
     if flash:
         st.success(flash)
+    for warn in st.session_state.pop("edit_expense_warnings", None) or []:
+        st.warning(warn)
 
     if df.empty:
         st.info("📊 目前沒有支出資料可編輯")
@@ -464,6 +805,10 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
             "country": _text(selected_row.get('country', '')),
             "location": _text(selected_row.get('location', '')),
             "notes": _text(selected_row.get('notes', '')),
+            # FX cells ('' / None = TWD-native; a legacy frame has no such columns)
+            "currency": _sheet_currency(selected_row.get('currency', '')),
+            "orig_amount": _fx_float(selected_row.get('orig_amount')),
+            "fx_rate": _fx_float(selected_row.get('fx_rate')),
         }
     original = st.session_state[snapshot_key]
 
@@ -480,6 +825,25 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
 
     orig_amount = original['amount']
     date_is_nat = original['date'] is None
+
+    # 💱 FX card (outside the form). Default 幣別 = stored currency regardless of
+    # 國家 (G4); a legacy row opens exactly as before unless the user opts in.
+    stored_currency = original.get('currency', '') or ''
+    fx_optin = st.checkbox(
+        "💱 以外幣輸入",
+        value=bool(stored_currency),
+        key=f"{kp}_fx_optin_{sheet_row}",
+        help="以原幣金額 × 匯率 計算台幣金額",
+    )
+    fx_state = None
+    if fx_optin:
+        stored_fx = FxStored(stored_currency, original.get('orig_amount'),
+                             original.get('fx_rate'), orig_amount)
+        fx_state = _fx_block(
+            kp, country, sheet_row, stored=stored_fx,
+            on_date=original['date'].date() if not date_is_nat else today_local(),
+            show_statement=True, df=df,
+        )
 
     # Every widget key includes the sheet row: switching records never
     # carries stale, unsubmitted edits over.
@@ -525,19 +889,24 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
             key=f"{kp}_category_{sheet_row}",
         )
 
-        if orig_amount is None:
-            st.warning(f"⚠️ 此記錄的原始金額無法解析（{_text(selected_row.get('amount'))!r}），更新前請輸入新金額")
-        # Negative stored amounts (refunds) must not crash the widget
-        amount_min = None if (orig_amount is not None and orig_amount < 0) else 0.0
-        new_amount = st.number_input(
-            "金額",
-            min_value=amount_min,
-            step=10.0,
-            value=float(orig_amount) if orig_amount is not None else None,
-            placeholder="請輸入金額...",
-            format="%.0f",
-            key=f"{kp}_amount_{sheet_row}",
-        )
+        if fx_state is not None:
+            # 金額 is derived from the card: shown, never typed (rules i-iii)
+            _fx_amount_info(fx_state)
+            new_amount = fx_state.twd
+        else:
+            if orig_amount is None:
+                st.warning(f"⚠️ 此記錄的原始金額無法解析（{_text(selected_row.get('amount'))!r}），更新前請輸入新金額")
+            # Negative stored amounts (refunds) must not crash the widget
+            amount_min = None if (orig_amount is not None and orig_amount < 0) else 0.0
+            new_amount = st.number_input(
+                "金額",
+                min_value=amount_min,
+                step=10.0,
+                value=float(orig_amount) if orig_amount is not None else None,
+                placeholder="請輸入金額...",
+                format="%.0f",
+                key=f"{kp}_amount_{sheet_row}",
+            )
 
         new_description = st.text_input(
             "描述",
@@ -580,18 +949,46 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
         if not new_description:
             st.error("請填寫支出描述")
             return False
-        if new_amount is None:
-            st.error("請填寫金額")
-            return False
-        if orig_amount is None and new_amount <= 0:
-            st.error("原始金額無法解析，請輸入大於 0 的新金額")
-            return False
-        if new_amount == 0:
-            st.error("金額不可為 0")
-            return False
-        if new_amount < 0 and not (orig_amount is not None and orig_amount < 0):
-            st.error("金額必須大於 0（僅退款記錄可為負數）")
-            return False
+        if fx_state is not None:
+            fx_error = _fx_validation_error(fx_state)
+            if fx_error:
+                st.error(fx_error)
+                return False
+        else:
+            if new_amount is None:
+                st.error("請填寫金額")
+                return False
+            if orig_amount is None and new_amount <= 0:
+                st.error("原始金額無法解析，請輸入大於 0 的新金額")
+                return False
+            if new_amount == 0:
+                st.error("金額不可為 0")
+                return False
+            if new_amount < 0 and not (orig_amount is not None and orig_amount < 0):
+                st.error("金額必須大於 0（僅退款記錄可為負數）")
+                return False
+
+        # FX cells (plan §2.5): whenever the card is shown, updated_data ALWAYS
+        # carries the three FX keys and 金額 = the value the card displays
+        # (rules i-iii already folded into fx_state.twd / rate_eff), so the
+        # saved 金額 can never differ from the in-form NT$ preview and a
+        # stale (orig, rate) can never sit beside a new 金額 -- this is also
+        # what lets the §2.6 audit's "換算不一致" rows be repaired by a plain
+        # 更新. (iv) 幣別 -> TWD (card hidden / opt-out) on a converted row
+        # writes explicit blanks; a legacy row without the card carries no
+        # FX keys and the API preserves the cells.
+        fx_fields: Dict[str, str] = {}
+        if fx_state is not None:
+            amount_out = float(fx_state.twd)
+            fx_fields = {
+                "currency": fx_state.currency,
+                "orig_amount": str(fx_state.orig_amount),
+                "fx_rate": str(fx_state.rate_eff),
+            }
+        else:
+            amount_out = float(new_amount)
+            if stored_currency:
+                fx_fields = {"currency": "", "orig_amount": "", "fx_rate": ""}
 
         # Prepare updated data. Columns the user did not change among
         # country/location/notes are omitted so the API preserves the live
@@ -600,10 +997,11 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
             "date": new_date.strftime("%Y-%m-%d"),
             "type_1": new_type_1,
             "category_type": new_category_type,
-            "amount": float(new_amount),
+            "amount": amount_out,
             "account": new_account,
             "description": new_description,
         }
+        updated_data.update(fx_fields)
         if country != original['country']:
             updated_data["country"] = country
         if location != original['location']:
@@ -613,9 +1011,15 @@ def edit_expense_form(df: pd.DataFrame) -> bool:
 
         success = api.update_expense(sheet_row, original, updated_data)
         if success:
-            st.session_state["edit_expense_flash"] = (
-                f"✅ 已更新支出：{new_description} (NT${float(new_amount):,.0f})"
-            )
+            if fx_state is not None:
+                flash_msg = (f"✅ 已更新支出：{new_description} "
+                             f"({fmt_orig(fx_state.currency, fx_state.orig_amount)} ≈ NT${amount_out:,.0f})")
+            else:
+                flash_msg = f"✅ 已更新支出：{new_description} (NT${amount_out:,.0f})"
+            st.session_state["edit_expense_flash"] = flash_msg
+            dropped = _write_warnings(api)
+            if dropped:
+                st.session_state["edit_expense_warnings"] = [FX_DROPPED_WARNING] + dropped
             _bump_edit_generation()
             st.cache_data.clear()
             st.rerun()

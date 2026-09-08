@@ -368,7 +368,12 @@ def freshness_caption(quote: Optional[Quote], now: Optional[datetime] = None) ->
         text = f"✅ 今日匯率 · {label} {iso}" if quote.as_of == today else f"✅ {iso} 匯率 · {label}"
     elif quote.state == "cached":
         now = now or now_local()
-        text = f"🕒 快取 {_age_text(now - quote.fetched_at)} · {label} {iso}"
+        age = now - quote.fetched_at
+        if quote.as_of == now.date() and age < timedelta(hours=1):
+            # fetched moments ago on the same rerun cycle: still "today's rate"
+            text = f"✅ 今日匯率 · {label} {iso}"
+        else:
+            text = f"🕒 快取 {_age_text(age)} · {label} {iso}"
     elif quote.state == "stale":
         text = f"⚠️ 無法更新，沿用 {label} {iso}"
     elif quote.state == "last_used":

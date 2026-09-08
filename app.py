@@ -14,8 +14,8 @@ import calendar
 import numpy as np
 
 # Import our modules
-from config import PAGE_CONFIG, COLORS
-from helpers import today_local
+from config import PAGE_CONFIG, COLORS, CURRENCY_META
+from helpers import today_local, to_twd, fmt_orig
 from auth import check_password, password_screen, auth_sidebar, init_session_state
 from sheets_api import load_expense_data, get_sheets_api, refresh_data, reconnect
 from input_forms import expense_input_form, edit_expense_form
@@ -138,6 +138,104 @@ def numeric_amount(df: pd.DataFrame, drop_na: bool = True) -> pd.DataFrame:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Foreign-currency helpers (PLAN §2.6 / §5 step 5). Every function tolerates a
+# frame without the 幣別/原幣金額/匯率 columns (a last_good_df captured before
+# deploy — G15): it then behaves as if no row were converted.
+# ---------------------------------------------------------------------------
+
+FX_TOLERANCE_TWD = 1  # |金額 − to_twd(原幣金額, 匯率)| above this = 換算不一致
+
+
+def _currency_series(df: pd.DataFrame) -> pd.Series:
+    """Upper-cased ISO code per row; '' for TWD-native rows and legacy frames."""
+    if df is None or 'currency' not in df.columns:
+        return pd.Series('', index=df.index if df is not None else None, dtype=object)
+    cur = df['currency'].fillna('').astype(str).str.strip().str.upper()
+    return cur.where(cur != 'TWD', '')
+
+
+def converted_mask(df: pd.DataFrame) -> pd.Series:
+    """True for rows carrying a non-TWD 幣別 (converted rows); all-False on legacy frames."""
+    if df is None or df.empty:
+        return pd.Series(dtype=bool)
+    return _currency_series(df) != ''
+
+
+def _row_label(row) -> str:
+    """'09/05 咖啡' — used to point the user at rows to fix in 編輯."""
+    d = row.get('date') if hasattr(row, 'get') else None
+    try:
+        ds = pd.Timestamp(d).strftime('%m/%d') if pd.notna(d) else '—'
+    except Exception:
+        ds = '—'
+    desc = row.get('description', '') if hasattr(row, 'get') else ''
+    desc = '' if pd.isna(desc) else str(desc).strip()
+    return f"{ds} {desc}".strip()
+
+
+def fx_audit(df: pd.DataFrame) -> dict:
+    """
+    Read-side audit of the sheet invariant (PLAN §2.4):
+      converted     rows with currency != ''  (已換算外幣)
+      inconsistent  converted rows whose |amount − to_twd(orig, rate)| > 1 TWD, or
+                    whose amount/orig_amount/fx_rate is missing (換算不一致)
+      untagged      rows abroad (國家 not in ('', '台灣')) with currency == '' (未標幣別)
+    Returns {'converted': int, 'inconsistent': int, 'untagged': int,
+             'inconsistent_labels': [str], 'untagged_labels': [str]}.
+    Legacy frames (no 'currency' column) -> all zeros.
+    """
+    empty = {'converted': 0, 'inconsistent': 0, 'untagged': 0,
+             'inconsistent_labels': [], 'untagged_labels': []}
+    if df is None or df.empty or 'currency' not in df.columns:
+        return empty
+
+    cur = _currency_series(df)
+    conv = cur != ''
+    amount = numeric_amount(df, drop_na=False)['amount'] if 'amount' in df.columns else pd.Series(np.nan, index=df.index)
+    orig = pd.to_numeric(df['orig_amount'], errors='coerce') if 'orig_amount' in df.columns else pd.Series(np.nan, index=df.index)
+    rate = pd.to_numeric(df['fx_rate'], errors='coerce') if 'fx_rate' in df.columns else pd.Series(np.nan, index=df.index)
+
+    inconsistent_labels = []
+    for idx in df.index[conv]:
+        a, o, r = amount.get(idx), orig.get(idx), rate.get(idx)
+        ok = False
+        if pd.notna(a) and pd.notna(o) and pd.notna(r):
+            dp = CURRENCY_META.get(cur[idx], (2, 0.01))[0]
+            try:
+                ok = abs(float(a) - to_twd(o, r, dp)) <= FX_TOLERANCE_TWD
+            except (ValueError, ArithmeticError):
+                ok = False
+        if not ok:
+            inconsistent_labels.append(_row_label(df.loc[idx]))
+
+    untagged_labels = []
+    if 'country' in df.columns:
+        country = df['country'].fillna('').astype(str).str.strip()
+        untagged = (~conv) & (~country.isin(['', '台灣']))
+        untagged_labels = [_row_label(df.loc[idx]) for idx in df.index[untagged]]
+
+    return {
+        'converted': int(conv.sum()),
+        'inconsistent': len(inconsistent_labels),
+        'untagged': len(untagged_labels),
+        'inconsistent_labels': inconsistent_labels,
+        'untagged_labels': untagged_labels,
+    }
+
+
+def orig_labels(df: pd.DataFrame) -> pd.Series:
+    """'SGD 12.50' per converted row, '' otherwise (helpers.fmt_orig)."""
+    if df is None or df.empty or 'currency' not in df.columns:
+        return pd.Series('', index=df.index if df is not None else None, dtype=object)
+    cur = _currency_series(df)
+    orig = pd.to_numeric(df['orig_amount'], errors='coerce') if 'orig_amount' in df.columns else pd.Series(np.nan, index=df.index)
+    return pd.Series(
+        [fmt_orig(c, o) if c else '' for c, o in zip(cur, orig)],
+        index=df.index, dtype=object,
+    )
+
+
 def _clamp_day(year: int, month: int, day: int) -> date:
     """Build a date, clamping the day to the month's length (e.g. Mar 31 -> Feb 28)."""
     return date(year, month, min(day, calendar.monthrange(year, month)[1]))
@@ -207,6 +305,21 @@ def show_data_quality_info(df: pd.DataFrame):
             st.write(f"**零金額記錄**: {zero_amounts}")
             if invalid_amounts:
                 st.write(f"**無法解析的金額**: {invalid_amounts}")
+
+        # Foreign-currency audit (PLAN §2.6); legacy frames (no 幣別 column) show nothing here.
+        if 'currency' in df.columns:
+            audit = fx_audit(df)
+            st.write(f"**已換算外幣**: {audit['converted']} 筆")
+            if audit['inconsistent']:
+                st.write(f"**換算不一致**: {audit['inconsistent']} 筆")
+                st.caption("⚠️ 金額 ≠ 原幣金額 × 匯率（差 > NT$1）— 請在「編輯」修正：" +
+                           "、".join(audit['inconsistent_labels'][:10]) +
+                           ("…" if audit['inconsistent'] > 10 else ""))
+            else:
+                st.write("**換算不一致**: 0 筆")
+            if audit['untagged']:
+                st.write(f"**未標幣別**: {audit['untagged']} 筆")
+                st.caption("ℹ️ 國外消費但未填幣別（視為台幣）；外幣小計因此為部分金額")
 
         if 'date' in df.columns:
             valid_dates = df['date'].notna().sum()
@@ -415,6 +528,11 @@ def show_recent_transactions(df: pd.DataFrame, limit: int = 15):
             display_cols.append('📝 描述')
 
         display_cols.append('💰 金額')
+
+        # 原幣 column only when the frame holds at least one converted row (PLAN §2.6)
+        if bool(converted_mask(df).any()):
+            display_df['💱 原幣'] = orig_labels(recent_df)
+            display_cols.append('💱 原幣')
 
         if 'account' in display_df.columns:
             display_df['👤 帳戶'] = display_df['account'].fillna('')

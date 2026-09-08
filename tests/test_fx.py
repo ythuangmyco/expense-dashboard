@@ -348,20 +348,22 @@ def test_freshness_caption_states(clock):
     assert fx.freshness_caption(base) == "✅ 今日匯率 · Frankfurter 2026-09-08"
     cached = fx.Quote("SGD", Decimal("24.908000"), TODAY, "frankfurter", "cached", NOW)
     assert fx.freshness_caption(cached, now=NOW + timedelta(hours=2)) == "🕒 快取 2 小時前 · Frankfurter 2026-09-08"
-    assert fx.freshness_caption(cached, now=NOW + timedelta(minutes=15)).startswith("🕒 快取 15 分鐘前")
+    # a same-day quote fetched under an hour ago still reads as today's rate
+    assert fx.freshness_caption(cached, now=NOW + timedelta(minutes=15)) == "✅ 今日匯率 · Frankfurter 2026-09-08"
+    assert fx.freshness_caption(cached, now=NOW + timedelta(minutes=75)).startswith("🕒 快取 1 小時前")
     stale = fx.Quote("SGD", Decimal("24.908000"), TODAY, "fawaz_cdn", "stale", NOW)
     assert fx.freshness_caption(stale) == "⚠️ 無法更新，沿用 currency-api 2026-09-08"
 
 
 def test_freshness_caption_erapi_attribution_link():
     q = fx.Quote("SGD", Decimal("24.912776"), TODAY, "erapi", "live", NOW)
-    cap = fx.freshness_caption(q)
+    cap = fx.freshness_caption(q, now=NOW)
     assert "Rates By Exchange Rate API" in cap and "https://www.exchangerate-api.com" in cap
     assert cap.startswith("✅ 今日匯率 · Exchange Rate API 2026-09-08")
     # attribution follows the quote through cached/stale states too
-    assert "Rates By Exchange Rate API" in fx.freshness_caption(fx.replace(q, state="stale"))
+    assert "Rates By Exchange Rate API" in fx.freshness_caption(fx.replace(q, state="stale"), now=NOW)
     # and never appears for other sources
-    assert "Exchange Rate API" not in fx.freshness_caption(fx.replace(q, source="frankfurter"))
+    assert "Exchange Rate API" not in fx.freshness_caption(fx.replace(q, source="frankfurter"), now=NOW)
 
 
 def test_effective_rate_with_card_fee():
