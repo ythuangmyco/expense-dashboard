@@ -126,6 +126,14 @@ Open `http://localhost:8501` and test the application.
 4. Paste it into the secrets editor
 5. Save the secrets
 
+> **Login cookie secret (optional):** add `AUTH_COOKIE_SECRET = "<long random string>"` to the Streamlit Cloud secrets
+> so the "記住我" cookie stays valid across redeploys/restarts (without it, the secret is derived from `FAMILY_PIN`).
+> Put it as a **top-level key on the first line, above `[google_sheets]`** — a key pasted at the end of the secrets
+> lands inside the `[app]` table. The app also accepts `[app] AUTH_COOKIE_SECRET` as a fallback, but keep it top-level
+> to match `streamlit_secrets.template.toml`. When neither is set the app logs a one-time warning and uses the
+> `FAMILY_PIN`-derived secret.
+> Changing `AUTH_COOKIE_SECRET` (or `FAMILY_PIN` when no secret is set) invalidates every cookie and logs everyone out.
+
 ### 3.4 Update Configuration
 
 If needed, update the following in your `config.py`:

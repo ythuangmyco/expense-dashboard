@@ -9,13 +9,15 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
+import calendar
 import numpy as np
 
 # Import our modules
 from config import PAGE_CONFIG, COLORS
+from helpers import today_local
 from auth import check_password, password_screen, auth_sidebar, init_session_state
-from sheets_api import load_expense_data, get_sheets_api, refresh_data
+from sheets_api import load_expense_data, get_sheets_api, refresh_data, reconnect
 from input_forms import expense_input_form, edit_expense_form
 
 # Page configuration
@@ -77,7 +79,8 @@ st.markdown("""
         }
 
         .block-container {
-            padding-top: 1rem;
+            /* Keep >= Streamlit's fixed header height (3.75rem) so the title is not hidden */
+            padding-top: 4.5rem;
             padding-left: 1rem;
             padding-right: 1rem;
         }
@@ -113,21 +116,62 @@ def show_api_status():
                 st.code("需要在 Streamlit Cloud 的 Settings → Secrets 中添加 Google 服務帳戶憑證")
 
         if st.button("🔄 重新連接"):
-            refresh_data()
+            reconnect()  # rebuilds the SheetsAPI client and clears the data cache
             st.rerun()
 
 
-def get_comparison_period(start_date, end_date, df):
-    """Get the comparison period (previous period of same length)"""
-    if not start_date or not end_date:
+def numeric_amount(df: pd.DataFrame, drop_na: bool = True) -> pd.DataFrame:
+    """Return a copy of df whose 'amount' column is numeric (never mutates the input).
+
+    Unparseable amounts become NaN and are dropped by default so that sums,
+    means and groupbys never concatenate strings or silently count NaN as 0.
+    """
+    if df is None or df.empty or 'amount' not in df.columns:
+        return pd.DataFrame() if df is None else df.copy()
+    out = df.copy()
+    amt = out['amount']
+    if not pd.api.types.is_numeric_dtype(amt):
+        amt = amt.astype(str).str.replace(',', '', regex=False).str.replace('NT$', '', regex=False).str.strip()
+    out['amount'] = pd.to_numeric(amt, errors='coerce')
+    if drop_na:
+        out = out[out['amount'].notna()]
+    return out
+
+
+def _clamp_day(year: int, month: int, day: int) -> date:
+    """Build a date, clamping the day to the month's length (e.g. Mar 31 -> Feb 28)."""
+    return date(year, month, min(day, calendar.monthrange(year, month)[1]))
+
+
+def get_comparison_period(start_date, end_date, df, period_type=None):
+    """Get the comparison period for (start_date, end_date).
+
+    Calendar presets compare against the previous calendar unit:
+      本月 -> previous month, day 1 .. same day-of-month (clamped)
+      上月 -> the full calendar month before start_date
+      本年 -> previous year, Jan 1 .. same month/day (clamped)
+    Every other preset uses the trailing window of equal length.
+    """
+    if not start_date or not end_date or end_date < start_date:
         return None, None, None
 
-    period_length = (end_date - start_date).days + 1
-    comp_end = start_date - timedelta(days=1)
-    comp_start = comp_end - timedelta(days=period_length - 1)
+    if period_type == "上月":
+        comp_end = start_date - timedelta(days=1)
+        comp_start = comp_end.replace(day=1)
+    elif period_type == "本月":
+        comp_end_full = start_date - timedelta(days=1)  # last day of previous month
+        comp_start = comp_end_full.replace(day=1)
+        comp_end = min(comp_end_full, _clamp_day(comp_start.year, comp_start.month, end_date.day))
+    elif period_type == "本年":
+        comp_start = date(start_date.year - 1, 1, 1)
+        comp_end = _clamp_day(end_date.year - 1, end_date.month, end_date.day)
+    else:
+        period_length = (end_date - start_date).days + 1
+        comp_end = start_date - timedelta(days=1)
+        comp_start = comp_end - timedelta(days=period_length - 1)
 
     # Filter comparison data
-    if 'date' in df.columns and not df.empty:
+    if df is not None and 'date' in df.columns and not df.empty:
         try:
             comp_start_dt = pd.to_datetime(comp_start)
             comp_end_dt = pd.to_datetime(comp_end) + pd.Timedelta(days=1)
@@ -155,10 +199,14 @@ def show_data_quality_info(df: pd.DataFrame):
         st.write(f"**有效記錄數量**: {len(df)}")
 
         if 'amount' in df.columns:
-            valid_amounts = df['amount'].notna().sum()
-            zero_amounts = (df['amount'] == 0).sum() if 'amount' in df.columns else 0
+            amt = numeric_amount(df, drop_na=False)['amount']
+            valid_amounts = int(amt.notna().sum())
+            zero_amounts = int((amt == 0).sum())
+            invalid_amounts = int(amt.isna().sum())
             st.write(f"**有效金額記錄**: {valid_amounts}")
             st.write(f"**零金額記錄**: {zero_amounts}")
+            if invalid_amounts:
+                st.write(f"**無法解析的金額**: {invalid_amounts}")
 
         if 'date' in df.columns:
             valid_dates = df['date'].notna().sum()
@@ -174,8 +222,25 @@ def show_data_quality_info(df: pd.DataFrame):
         st.caption("💡 被篩選的記錄通常是空白行、無效日期或無效金額的資料")
 
 
-def show_summary_metrics(df: pd.DataFrame, start_date=None, end_date=None, original_df=None):
-    """Display key metrics for the specified period with comparison"""
+def _fmt_delta(change, fmt="{:+,.0f}"):
+    """Format a metric delta; exact-zero (after rounding) -> None so st.metric shows no arrow."""
+    if change is None:
+        return None
+    try:
+        rounded = round(float(change))
+    except (TypeError, ValueError):
+        return None
+    if rounded == 0:
+        return None
+    return fmt.format(rounded)
+
+
+def show_summary_metrics(df: pd.DataFrame, start_date=None, end_date=None, original_df=None, period_type=None):
+    """Display key metrics for the specified period with comparison.
+
+    original_df is the comparison base: it must already carry the same
+    category/account filters as df (only the date range differs).
+    """
     if df.empty:
         st.info("📊 所選期間內無支出資料")
         return
@@ -198,11 +263,13 @@ def show_summary_metrics(df: pd.DataFrame, start_date=None, end_date=None, origi
 
     # Calculate metrics for the filtered period (df is already filtered)
     try:
-        # Ensure amount is numeric
-        if 'amount' in df.columns:
-            df['amount'] = pd.to_numeric(df['amount'], errors='coerce').fillna(0)
+        # Work on a numeric copy; never mutate the caller's (cached) frame.
+        df = numeric_amount(df)
+        if df.empty:
+            st.info("📊 所選期間內沒有可解析的金額")
+            return
 
-        total_amount = float(df['amount'].sum()) if 'amount' in df.columns else 0.0
+        total_amount = float(df['amount'].sum())
         total_transactions = len(df)
         avg_transaction = float(total_amount / total_transactions) if total_transactions > 0 else 0.0
 
@@ -223,13 +290,10 @@ def show_summary_metrics(df: pd.DataFrame, start_date=None, end_date=None, origi
 
         # Get comparison data if we have the original dataframe and date range
         comp_metrics = {}
-        if original_df is not None and start_date and end_date and len(original_df) > len(df):
-            comp_start, comp_end, comp_df = get_comparison_period(start_date, end_date, original_df)
+        if original_df is not None and start_date and end_date:
+            comp_start, comp_end, comp_df = get_comparison_period(start_date, end_date, original_df, period_type)
+            comp_df = numeric_amount(comp_df) if comp_df is not None else pd.DataFrame()
             if not comp_df.empty:
-                # Ensure comparison amounts are numeric
-                if 'amount' in comp_df.columns:
-                    comp_df['amount'] = pd.to_numeric(comp_df['amount'], errors='coerce').fillna(0)
-
                 comp_total = float(comp_df['amount'].sum())
                 comp_transactions = len(comp_df)
                 comp_avg = float(comp_total / comp_transactions) if comp_transactions > 0 else 0.0
@@ -251,45 +315,38 @@ def show_summary_metrics(df: pd.DataFrame, start_date=None, end_date=None, origi
     # Display metrics in columns
     col1, col2, col3, col4 = st.columns(4)
 
+    # Spending going up is bad -> 'inverse' colours; a transaction count is neutral -> 'off'
     with col1:
-        delta_value = None
-        if 'total_change' in comp_metrics:
-            delta_value = f"{comp_metrics['total_change']:+,.0f}"
         st.metric(
             "總支出",
             f"NT${total_amount:,.0f}",
-            delta=delta_value
+            delta=_fmt_delta(comp_metrics.get('total_change')),
+            delta_color="inverse"
         )
 
     with col2:
-        delta_value = None
-        if 'transactions_change' in comp_metrics:
-            delta_value = f"{comp_metrics['transactions_change']:+,}"
         st.metric(
             "交易次數",
             f"{total_transactions:,}",
-            delta=delta_value
+            delta=_fmt_delta(comp_metrics.get('transactions_change'), fmt="{:+,}"),
+            delta_color="off"
         )
 
     with col3:
-        delta_value = None
-        if 'avg_change' in comp_metrics:
-            delta_value = f"{comp_metrics['avg_change']:+,.0f}"
         st.metric(
             "平均單筆",
             f"NT${avg_transaction:,.0f}",
-            delta=delta_value
+            delta=_fmt_delta(comp_metrics.get('avg_change')),
+            delta_color="inverse"
         )
 
     with col4:
         if daily_avg > 0:
-            delta_value = None
-            if 'daily_change' in comp_metrics:
-                delta_value = f"{comp_metrics['daily_change']:+,.0f}"
             st.metric(
                 "日均支出",
                 f"NT${daily_avg:,.0f}",
-                delta=delta_value
+                delta=_fmt_delta(comp_metrics.get('daily_change')),
+                delta_color="inverse"
             )
         else:
             st.metric(
@@ -337,14 +394,18 @@ def show_recent_transactions(df: pd.DataFrame, limit: int = 15):
         else:
             display_df['🏷️ 分類'] = '未分類'
 
-        # Safe amount formatting
+        # Safe amount formatting (unparseable -> shown as '—', not a fake NT$0)
+        numeric_amt = numeric_amount(recent_df, drop_na=False)['amount']
+
         def safe_amount_format(x):
             try:
+                if pd.isna(x):
+                    return "—"
                 return f"NT${float(x):,.0f}"
-            except:
-                return "NT$0"
+            except Exception:
+                return "—"
 
-        display_df['💰 金額'] = display_df['amount'].apply(safe_amount_format)
+        display_df['💰 金額'] = numeric_amt.apply(safe_amount_format)
 
         # Create columns list based on what's available
         display_cols = ['📅 日期', '🏷️ 分類']
@@ -369,7 +430,7 @@ def show_recent_transactions(df: pd.DataFrame, limit: int = 15):
 
         # Show summary info
         total_shown = len(recent_df)
-        total_amount = recent_df['amount'].sum()
+        total_amount = float(numeric_amt.fillna(0).sum())
         st.caption(f"📊 顯示最近 {total_shown} 筆交易，總額 NT${total_amount:,.0f}")
 
     except Exception as e:
@@ -386,6 +447,12 @@ def show_visualizations(df: pd.DataFrame):
     required_cols = ['amount']
     if not all(col in df.columns for col in required_cols):
         st.warning(f"📊 圖表功能需要完整資料。缺少欄位: {[col for col in required_cols if col not in df.columns]}")
+        return
+
+    # Own numeric copy: charts must not depend on another function's mutation
+    df = numeric_amount(df)
+    if df.empty:
+        st.info("📊 需要更多資料才能顯示圖表")
         return
 
     st.subheader("📊 支出分析")
@@ -512,8 +579,8 @@ def show_visualizations(df: pd.DataFrame):
 
 
 def get_period_dates(period_type, df):
-    """Get start and end dates for different period types"""
-    today = datetime.now().date()
+    """Get start and end dates for different period types (Asia/Taipei calendar)"""
+    today = today_local()
 
     if period_type == "今天":
         return today, today
@@ -546,32 +613,63 @@ def get_period_dates(period_type, df):
         return None, None
 
 
+def _filter_options(df, column, all_label):
+    """Option list for a filter widget: all_label + sorted non-empty values of the column."""
+    if column not in df.columns or df.empty:
+        return [all_label]
+    values = df[column].dropna().astype(str).str.strip()
+    values = sorted(v for v in values.unique().tolist() if v and v.lower() != 'nan')
+    return [all_label] + values
+
+
+def _prune_filter_state(key, options, default):
+    """Drop stored selections no longer offered; fall back to default if nothing remains."""
+    if key in st.session_state:
+        current = list(st.session_state[key])
+        kept = [v for v in current if v in options]
+        new_value = kept if kept else list(default)
+        # Only assign when something was actually pruned: assigning on every
+        # run while the widget also has default= makes Streamlit show its
+        # "created with a default value but also had its value set" warning.
+        if new_value != current:
+            st.session_state[key] = new_value
+
+
 def additional_filters(df):
-    """Additional filtering options for categories and accounts"""
+    """Additional filtering options for categories and accounts.
+
+    Pass the FULL (not period-sliced) dataframe: options are then stable
+    across period changes, and the widgets keep fixed keys so a selection
+    survives a period switch instead of resetting to 全部.
+    """
     with st.expander("🔍 進階篩選", expanded=False):
         col1, col2 = st.columns(2)
 
         with col1:
             # Category filter
-            available_categories = ["全部分類"] + sorted(df['category_type'].unique().tolist()) if 'category_type' in df.columns and not df.empty else ["全部分類"]
+            available_categories = _filter_options(df, 'category_type', "全部分類")
+            _prune_filter_state("cat_filter", available_categories, ["全部分類"])
             selected_categories = st.multiselect(
                 "支出分類",
                 options=available_categories,
                 default=["全部分類"],
+                key="cat_filter",
                 help="選擇要顯示的支出分類"
             )
 
         with col2:
             # Account filter
-            available_accounts = ["全部帳戶"] + sorted(df['account'].unique().tolist()) if 'account' in df.columns and not df.empty else ["全部帳戶"]
+            available_accounts = _filter_options(df, 'account', "全部帳戶")
+            _prune_filter_state("acct_filter", available_accounts, ["全部帳戶"])
             selected_accounts = st.multiselect(
                 "帳戶",
                 options=available_accounts,
                 default=["全部帳戶"],
+                key="acct_filter",
                 help="選擇要顯示的帳戶"
             )
 
-    return selected_categories, selected_accounts
+    return list(selected_categories or []), list(selected_accounts or [])
 
 
 def apply_additional_filters(df, selected_categories, selected_accounts):
@@ -601,8 +699,10 @@ def time_period_selector(df):
         "最近30天", "本年", "全部期間", "自定義範圍"
     ]
 
-    # Initialize session state for period selection
-    if 'selected_period' not in st.session_state:
+    # Initialize session state for period selection (the widget key IS the state;
+    # no index= recomputation, no post-widget assignment -> ids stay stable and
+    # consecutive selections are never dropped)
+    if 'selected_period' not in st.session_state or st.session_state.selected_period not in period_options:
         st.session_state.selected_period = "本月"
 
     col1, col2 = st.columns([2, 1])
@@ -611,56 +711,45 @@ def time_period_selector(df):
         selected_period = st.selectbox(
             "選擇時間範圍",
             options=period_options,
-            index=period_options.index(st.session_state.selected_period) if st.session_state.selected_period in period_options else 3,
+            key="selected_period",
             help="選擇預設的時間範圍或自定義"
         )
-        st.session_state.selected_period = selected_period
 
     with col2:
-        # Quick period buttons with more options
+        # Quick period buttons: on_click callbacks run before the next script run,
+        # so setting the keyed widget's state here is legal and needs no st.rerun()
         st.markdown("**快速選擇:**")
 
-        # Row 1: Most common periods
-        quick_row1_col1, quick_row1_col2 = st.columns(2)
-        with quick_row1_col1:
-            if st.button("今天", help="查看今日支出", use_container_width=True):
-                st.session_state.selected_period = "今天"
-                st.rerun()
-        with quick_row1_col2:
-            if st.button("最近7天", help="查看最近一週支出", use_container_width=True):
-                st.session_state.selected_period = "最近7天"
-                st.rerun()
+        def _set_period(value):
+            st.session_state.selected_period = value
 
-        # Row 2: Weekly and monthly
-        quick_row2_col1, quick_row2_col2 = st.columns(2)
-        with quick_row2_col1:
-            if st.button("本週", help="查看本週支出", use_container_width=True):
-                st.session_state.selected_period = "本週"
-                st.rerun()
-        with quick_row2_col2:
-            if st.button("本月", help="查看本月支出", use_container_width=True):
-                st.session_state.selected_period = "本月"
-                st.rerun()
-
-        # Row 3: Extended periods
-        quick_row3_col1, quick_row3_col2 = st.columns(2)
-        with quick_row3_col1:
-            if st.button("上月", help="查看上月支出", use_container_width=True):
-                st.session_state.selected_period = "上月"
-                st.rerun()
-        with quick_row3_col2:
-            if st.button("本年", help="查看本年度支出", use_container_width=True):
-                st.session_state.selected_period = "本年"
-                st.rerun()
+        quick_buttons = [
+            ("今天", "查看今日支出"), ("最近7天", "查看最近一週支出"),
+            ("本週", "查看本週支出"), ("本月", "查看本月支出"),
+            ("上月", "查看上月支出"), ("本年", "查看本年度支出"),
+        ]
+        for i in range(0, len(quick_buttons), 2):
+            row_cols = st.columns(2)
+            for col, (label, help_text) in zip(row_cols, quick_buttons[i:i + 2]):
+                with col:
+                    st.button(
+                        label,
+                        help=help_text,
+                        use_container_width=True,
+                        key=f"quick_period_{label}",
+                        on_click=_set_period,
+                        args=(label,),
+                    )
 
     # Get dates based on selection
     if selected_period == "自定義範圍":
         st.caption("🗓️ 自定義日期範圍")
         col1, col2 = st.columns(2)
 
-        # Default to current month if no data
-        default_start = datetime.now().replace(day=1).date()
-        default_end = datetime.now().date()
+        # Default to current month (Asia/Taipei) if no data
+        today = today_local()
+        default_start = today.replace(day=1)
+        default_end = today
 
         # If we have data, use actual date range for defaults
         if 'date' in df.columns and not df.empty:
@@ -676,6 +765,7 @@ def time_period_selector(df):
             start_date = st.date_input(
                 "開始日期",
                 value=default_start,
+                key="custom_start_date",
                 help="選擇篩選的開始日期"
             )
 
@@ -683,8 +773,14 @@ def time_period_selector(df):
             end_date = st.date_input(
                 "結束日期",
                 value=default_end,
+                key="custom_end_date",
                 help="選擇篩選的結束日期"
             )
+
+        # Validate ordering; main_dashboard treats None dates as 'no query'
+        if start_date and end_date and end_date < start_date:
+            st.error("⚠️ 結束日期不可早於開始日期")
+            return None, None, selected_period
     else:
         start_date, end_date = get_period_dates(selected_period, df)
 
@@ -714,6 +810,12 @@ def main_dashboard():
     # Enhanced time period selection
     start_date, end_date, selected_period = time_period_selector(df)
 
+    # Additional filtering options are rendered BEFORE any early return so the
+    # keyed multiselects exist on every run and keep their selection even
+    # while a custom range is invalid. Options come from the FULL df so the
+    # widgets keep their identity across period changes.
+    selected_categories, selected_accounts = additional_filters(df)
+
     if not start_date or not end_date:
         st.warning("⚠️ 請選擇有效的日期範圍")
         return
@@ -735,36 +837,36 @@ def main_dashboard():
             st.warning(f"⚠️ 日期篩選錯誤: {str(e)}")
             filtered_df = df  # Use original data if filtering fails
 
-    # Additional filtering options
-    if not filtered_df.empty:
-        selected_categories, selected_accounts = additional_filters(filtered_df)
-        filtered_df = apply_additional_filters(filtered_df, selected_categories, selected_accounts)
+    filtered_df = apply_additional_filters(filtered_df, selected_categories, selected_accounts)
 
-        # Show comprehensive filter summary
-        filter_parts = [f"**{selected_period}**"]
+    # Comparison base: all dates, but the SAME category/account filters as the current period
+    comparison_base = apply_additional_filters(df, selected_categories, selected_accounts)
 
-        if "全部分類" not in selected_categories and selected_categories:
-            filter_parts.append(f"分類: {', '.join(selected_categories)}")
+    # Show comprehensive filter summary
+    filter_parts = [f"**{selected_period}**"]
 
-        if "全部帳戶" not in selected_accounts and selected_accounts:
-            filter_parts.append(f"帳戶: {', '.join(selected_accounts)}")
+    if "全部分類" not in selected_categories and selected_categories:
+        filter_parts.append(f"分類: {', '.join(selected_categories)}")
 
-        if len(filtered_df) != len(df):
-            filter_summary = " | ".join(filter_parts)
-            st.success(f"📊 {filter_summary} - {len(filtered_df)}/{len(df)} 筆記錄")
-        else:
-            st.info(f"📊 顯示所有 {len(df)} 筆記錄")
+    if "全部帳戶" not in selected_accounts and selected_accounts:
+        filter_parts.append(f"帳戶: {', '.join(selected_accounts)}")
+
+    if len(filtered_df) != len(df):
+        filter_summary = " | ".join(filter_parts)
+        st.success(f"📊 {filter_summary} - {len(filtered_df)}/{len(df)} 筆記錄")
+    else:
+        st.info(f"📊 顯示所有 {len(df)} 筆記錄")
 
     # Show summary metrics for filtered period with comparison
-    show_summary_metrics(filtered_df, start_date, end_date, df)
+    show_summary_metrics(filtered_df, start_date, end_date, comparison_base, selected_period)
 
     # Show data quality information
     show_data_quality_info(df)
 
     # Show comparison period info if available
-    if len(filtered_df) != len(df) and start_date and end_date:
-        comp_start, comp_end, comp_df = get_comparison_period(start_date, end_date, df)
-        if not comp_df.empty:
+    if start_date and end_date:
+        comp_start, comp_end, comp_df = get_comparison_period(start_date, end_date, comparison_base, selected_period)
+        if comp_df is not None and not comp_df.empty:
             st.caption(f"📊 與前期比較 ({comp_start.strftime('%m/%d')} - {comp_end.strftime('%m/%d')}, {len(comp_df)} 筆記錄)")
 
     st.divider()
@@ -812,6 +914,10 @@ def main():
     # Show header
     show_header()
 
+    # Confirmation for a refresh triggered on the previous run (survives st.rerun)
+    if st.session_state.pop("data_refreshed", False):
+        st.toast("✅ 資料已重新整理")
+
     # Show API status
     show_api_status()
 
@@ -837,9 +943,10 @@ def main():
         st.caption("🏠 HuangLiu Family")
 
         # Data refresh button
-        if st.button("🔄 重新整理資料"):
+        if st.button("🔄 重新整理資料", key="sidebar_refresh_data"):
             refresh_data()
-            st.success("✅ 資料已重新整理")
+            st.session_state["data_refreshed"] = True
+            st.rerun()  # tabs already rendered with cached data; rerun to show fresh data
 
 
 if __name__ == "__main__":

@@ -1,140 +1,252 @@
 """
 Authentication module for the expense dashboard
 Simple PIN-based authentication for family use
+
+"Remember me" is implemented as a per-browser signed cookie (expense_auth).
+Cookie value = base64url(JSON {user, exp}) + "." + HMAC-SHA256 hex signature.
+The cookie is read via st.context.cookies and written/cleared via a tiny JS
+snippet (Streamlit has no server-side set-cookie API). Because
+st.context.cookies is snapshotted when the browser session connects, the page
+is reloaded right after the cookie is set/cleared so the new session sees it.
 """
 
 import streamlit as st
-from datetime import datetime, timedelta
+import streamlit.components.v1 as components
+from datetime import datetime
 import base64
-import json
 import hashlib
+import hmac
+import json
+import logging
+import time
 from config import FAMILY_PIN, ALLOWED_USERS
 
 
-import os
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+COOKIE_NAME = "expense_auth"
+REMEMBER_DAYS = 30
+SESSION_ONLY_HOURS = 12  # validity of the session cookie when "記住我" is unticked
 
 
-def get_auth_file_path():
-    """
-    Get the path for the auth file
-    """
-    return os.path.join(os.path.expanduser("~"), ".streamlit_expense_auth.json")
+# ---------------------------------------------------------------------------
+# Token helpers (pure functions, no Streamlit UI; unit-tested in
+# tests_auth_token.py)
+# ---------------------------------------------------------------------------
+
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
-def save_remember_me_auth(user: str, remember_days: int = 30):
+def _b64url_decode(text: str) -> bytes:
+    padding = "=" * (-len(text) % 4)
+    return base64.urlsafe_b64decode(text + padding)
+
+
+_fallback_secret_warned = False
+
+
+def get_cookie_secret() -> str:
     """
-    Save authentication data to file for persistent remember me
+    Secret used to sign the auth cookie.
+    Prefer the top-level st.secrets["AUTH_COOKIE_SECRET"]; also accept
+    st.secrets["app"]["AUTH_COOKIE_SECRET"] (the natural place to append it
+    in a secrets.toml that ends inside [app]). Fall back to a deterministic
+    value derived from FAMILY_PIN so the app works without secrets.toml, and
+    log a one-time warning when that fallback is used.
     """
+    global _fallback_secret_warned
     try:
-        expiry_date = datetime.now() + timedelta(days=remember_days)
-        auth_data = {
-            "user": user,
-            "expiry": expiry_date.isoformat(),
-            "created": datetime.now().isoformat()
-        }
+        secret = st.secrets.get("AUTH_COOKIE_SECRET")
+        if not secret:
+            app_section = st.secrets.get("app")
+            if app_section is not None and hasattr(app_section, "get"):
+                secret = app_section.get("AUTH_COOKIE_SECRET")
+        if secret:
+            return str(secret)
+    except Exception:
+        pass
+    if not _fallback_secret_warned:
+        _fallback_secret_warned = True
+        logging.getLogger(__name__).warning(
+            "AUTH_COOKIE_SECRET not set in st.secrets; deriving the cookie "
+            "signing secret from FAMILY_PIN (cookies will be invalidated if "
+            "FAMILY_PIN changes)."
+        )
+    return hashlib.sha256(("cookie-secret:" + FAMILY_PIN).encode()).hexdigest()
 
-        auth_file = get_auth_file_path()
-        with open(auth_file, 'w') as f:
-            json.dump(auth_data, f)
 
-        return True
-
-    except Exception as e:
-        st.warning(f"記住我功能保存失敗: {str(e)}")
-        return False
+def _sign(payload_b64: str, secret: str) -> str:
+    return hmac.new(secret.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
 
 
-def load_remember_me_auth():
+def make_auth_token(user: str, days: float = REMEMBER_DAYS, secret: str = None, now: int = None) -> str:
     """
-    Load authentication data from file
+    Build a signed token: base64url(JSON {user, exp}) + "." + HMAC-SHA256 hex
     """
-    try:
-        auth_file = get_auth_file_path()
+    if secret is None:
+        secret = get_cookie_secret()
+    if now is None:
+        now = int(time.time())
+    exp = int(now + days * 86400)
+    payload = json.dumps({"user": user, "exp": exp}, separators=(",", ":"), ensure_ascii=False)
+    payload_b64 = _b64url_encode(payload.encode("utf-8"))
+    return payload_b64 + "." + _sign(payload_b64, secret)
 
-        if not os.path.exists(auth_file):
-            return None
 
-        with open(auth_file, 'r') as f:
-            auth_data = json.load(f)
+def verify_auth_token(token: str, secret: str = None, now: int = None):
+    """
+    Verify a token. Returns the payload dict {user, exp} if the signature is
+    valid, the token is not expired and the user is allowed; otherwise None.
+    """
+    if not token or not isinstance(token, str) or "." not in token:
+        return None
+    if secret is None:
+        secret = get_cookie_secret()
+    if now is None:
+        now = int(time.time())
 
-        # Check if expired
-        expiry_date = datetime.fromisoformat(auth_data["expiry"])
-        if datetime.now() > expiry_date:
-            # Expired, remove the file
-            os.remove(auth_file)
-            return None
-
-        # Check if user is still allowed
-        user = auth_data["user"]
-        if user not in ALLOWED_USERS:
-            os.remove(auth_file)
-            return None
-
-        return auth_data
-
-    except Exception as e:
-        # If there's any error reading the file, remove it
-        try:
-            auth_file = get_auth_file_path()
-            if os.path.exists(auth_file):
-                os.remove(auth_file)
-        except:
-            pass
+    payload_b64, _, sig = token.rpartition(".")
+    if not payload_b64 or not sig:
         return None
 
-
-def clear_remember_me_auth():
-    """
-    Clear the remember me authentication file
-    """
+    expected = _sign(payload_b64, secret)
     try:
-        auth_file = get_auth_file_path()
-        if os.path.exists(auth_file):
-            os.remove(auth_file)
-        return True
-    except Exception as e:
-        return False
-
-
-def check_persistent_auth():
-    """
-    Check if user is authenticated via remember me file
-    """
-    try:
-        auth_data = load_remember_me_auth()
-        if auth_data:
-            return auth_data["user"]
+        if not hmac.compare_digest(expected.encode("ascii"), sig.encode("utf-8")):
+            return None
+    except Exception:
         return None
 
-    except Exception as e:
+    try:
+        payload = json.loads(_b64url_decode(payload_b64).decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
         return None
 
+    user = payload.get("user")
+    exp = payload.get("exp")
+    if not isinstance(exp, int) or exp <= now:
+        return None
+    if user not in ALLOWED_USERS:
+        return None
+
+    return {"user": user, "exp": exp}
+
+
+# ---------------------------------------------------------------------------
+# Cookie I/O
+# ---------------------------------------------------------------------------
+
+def read_auth_cookie():
+    """
+    Read and verify the auth cookie from the current browser session.
+    Returns payload dict or None.
+    """
+    try:
+        token = st.context.cookies.get(COOKIE_NAME)
+    except Exception:
+        return None
+    return verify_auth_token(token)
+
+
+def _emit_cookie_js(value: str, max_age: int = None, reload: bool = True):
+    """
+    Inject JS that writes the cookie on the parent (app) document and (by
+    default) reloads the page so the next Streamlit session sees the cookie
+    via st.context.cookies.
+    max_age=None -> session cookie (dies when browser closes);
+    max_age=0    -> delete cookie.
+    reload=False -> silently refresh the cookie for an already-authenticated
+                    session (used for the rolling 30-day renewal).
+    """
+    max_age_part = "" if max_age is None else f"; Max-Age={int(max_age)}"
+    reload_part = "window.parent.location.reload();" if reload else ""
+    js = f"""
+<script>
+(function() {{
+  try {{
+    var doc = window.parent.document;
+    var secure = (window.parent.location.protocol === "https:") ? "; Secure" : "";
+    doc.cookie = "{COOKIE_NAME}={value}{max_age_part}; Path=/; SameSite=Lax" + secure;
+  }} catch (e) {{
+    console.error("expense_auth cookie error", e);
+  }}
+  {reload_part}
+}})();
+</script>
+"""
+    components.html(js, height=0)
+
+
+def set_auth_cookie(user: str, remember: bool):
+    """
+    Emit JS that sets the auth cookie and reloads the page.
+    Must only be called once, right after a successful PIN submit.
+    """
+    if remember:
+        token = make_auth_token(user, days=REMEMBER_DAYS)
+        _emit_cookie_js(token, max_age=REMEMBER_DAYS * 86400)
+    else:
+        token = make_auth_token(user, days=SESSION_ONLY_HOURS / 24)
+        _emit_cookie_js(token, max_age=None)
+
+
+def refresh_auth_cookie(user: str):
+    """
+    Re-issue a fresh 30-day cookie without reloading. Called once per session
+    on cookie auto-login so the expiry rolls forward on every visit. This also
+    keeps Safari/iOS users logged in: WebKit caps script-written cookies at
+    7 days, so a visit at least weekly renews it.
+    """
+    token = make_auth_token(user, days=REMEMBER_DAYS)
+    _emit_cookie_js(token, max_age=REMEMBER_DAYS * 86400, reload=False)
+    return int(time.time() + REMEMBER_DAYS * 86400)
+
+
+def clear_auth_cookie():
+    """
+    Emit JS that deletes the auth cookie and reloads the page.
+    Must only be called on explicit logout.
+    """
+    _emit_cookie_js("", max_age=0)
+
+
+# ---------------------------------------------------------------------------
+# Public auth API (imported by app.py)
+# ---------------------------------------------------------------------------
 
 def check_password():
     """
-    Enhanced authentication with persistent file-based remember me functionality
-    Returns True if authenticated, False otherwise
+    Returns True if authenticated (session_state, or a valid auth cookie),
+    False otherwise.
 
-    Note: Authentication disabled for easier family access
-    Set DISABLE_AUTH = False to enable family authentication
+    Note: Set DISABLE_AUTH = True to disable family authentication
     """
-    # Change this to False if you want to enable family authentication
     DISABLE_AUTH = False
 
     if DISABLE_AUTH:
         return True
 
-    # First check if already authenticated in this session
+    # Already authenticated in this session
     if st.session_state.get("password_correct", False):
         return True
 
-    # Check for persistent remember me authentication
-    remembered_user = check_persistent_auth()
-    if remembered_user:
-        # Auto-authenticate from remember me file
+    # Try the signed cookie
+    auth = read_auth_cookie()
+    if auth:
         st.session_state["password_correct"] = True
-        st.session_state["current_user"] = remembered_user
-        st.info(f"🔓 自動登入: 歡迎回來 {remembered_user}!")
+        st.session_state["current_user"] = auth["user"]
+        st.session_state["auth_exp"] = auth["exp"]
+        if not st.session_state.get("auto_login_notified", False):
+            st.session_state["auto_login_notified"] = True
+            # Only "remember me" cookies (validity beyond the session-only
+            # window) are rolled forward; session-only cookies stay as they are.
+            if auth["exp"] - int(time.time()) > SESSION_ONLY_HOURS * 3600:
+                st.session_state["auth_exp"] = refresh_auth_cookie(auth["user"])
+            st.info(f"🔓 已登入: 歡迎 {auth['user']}!")
         return True
 
     return False
@@ -169,9 +281,9 @@ def password_screen():
 
         # Remember me checkbox
         remember_me = st.checkbox(
-            "記住我 (30天)",
+            f"記住我 ({REMEMBER_DAYS}天)",
             value=True,
-            help="勾選後30天內不需重新登入"
+            help=f"勾選後{REMEMBER_DAYS}天內不需重新登入 (僅限此瀏覽器，每次開啟自動續期；iPhone/Safari 需至少每 7 天開啟一次)"
         )
 
         submit_button = st.form_submit_button("🔓 登入", use_container_width=True)
@@ -187,19 +299,16 @@ def password_screen():
                 st.session_state["password_correct"] = True
                 st.session_state["current_user"] = selected_user
 
-                # Set remember me functionality
                 if remember_me:
-                    success = save_remember_me_auth(selected_user, 30)
-                    if success:
-                        st.success(f"✅ 登入成功！已設定記住我功能 (30天)")
-                    else:
-                        st.success(f"✅ 登入成功！但記住我功能設定失敗")
+                    st.success(f"✅ 登入成功！已設定記住我功能 ({REMEMBER_DAYS}天)，頁面重新載入中...")
                 else:
-                    # Clear any existing remember me data
-                    clear_remember_me_auth()
-                    st.success(f"✅ 登入成功！歡迎 {selected_user}")
+                    st.success(f"✅ 登入成功！歡迎 {selected_user}，頁面重新載入中...")
 
-                st.rerun()
+                # Write cookie via JS and reload; the reloaded session picks the
+                # cookie up in check_password(). Do NOT st.rerun() here — the
+                # component must render for the JS to execute.
+                set_auth_cookie(selected_user, remember_me)
+                st.stop()
             else:
                 st.error("❌ 密碼錯誤，請重試")
                 st.session_state["password_correct"] = False
@@ -207,15 +316,16 @@ def password_screen():
 
 def logout():
     """
-    Logout function to clear authentication and user data
+    Logout: clear session state, delete the auth cookie and reload the page
     """
     st.session_state["password_correct"] = False
     st.session_state["current_user"] = None
+    st.session_state.pop("auth_exp", None)
+    st.session_state.pop("auto_login_notified", None)
 
-    # Clear persistent remember me data
-    clear_remember_me_auth()
-
-    st.rerun()
+    # Emit clear-cookie JS + reload; stop so the component actually renders.
+    clear_auth_cookie()
+    st.stop()
 
 
 def require_auth(func):
@@ -247,17 +357,19 @@ def auth_sidebar():
         with st.sidebar:
             st.success(f"🔓 已登入: {current_user}")
 
-            # Check for persistent remember me data
-            auth_data = load_remember_me_auth()
-            if auth_data:
-                expiry_str = auth_data.get("expiry")
-                if expiry_str:
-                    expiry_date = datetime.fromisoformat(expiry_str)
-                    days_left = (expiry_date - datetime.now()).days
-                    if days_left > 0:
-                        st.caption(f"記住我: 還有 {days_left} 天")
-                    else:
-                        st.caption("記住我: 即將過期")
+            # Days left from the cookie expiry
+            exp = st.session_state.get("auth_exp")
+            if exp is None:
+                auth = read_auth_cookie()
+                if auth:
+                    exp = auth["exp"]
+                    st.session_state["auth_exp"] = exp
+            if exp:
+                days_left = (datetime.fromtimestamp(exp) - datetime.now()).days
+                if days_left >= 1:
+                    st.caption(f"記住我: 還有 {days_left} 天")
+                else:
+                    st.caption("記住我: 未啟用或即將過期")
 
             if st.button("🚪 登出"):
                 logout()

@@ -6,16 +6,162 @@ Handles data reading, writing, and fallback to CSV export
 import streamlit as st
 import pandas as pd
 import gspread
+from gspread.exceptions import APIError
 from google.oauth2.service_account import Credentials
 import requests
-from datetime import datetime
+import time
+from datetime import datetime, date
 import logging
-from typing import Optional, Dict, List, Union
+from typing import Optional, Dict, List, Tuple, Any
 from config import SHEET_ID, WORKSHEET_GID, SHEET_URL, COLUMN_MAPPING
+from helpers import parse_amount, today_local, now_local, LOCAL_TZ  # noqa: F401 (re-exported for callers)
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Constants / helpers
+# ---------------------------------------------------------------------------
+
+# Expected sheet header, in sheet order (A..I)
+EXPECTED_HEADERS = ['日期', '類型_1', '類型_2', '金額', '帳戶', '名稱', '國家', '地點', '備註']
+# internal name -> Chinese header (reverse lookup of COLUMN_MAPPING, restricted to the real header)
+INTERNAL_TO_HEADER = {COLUMN_MAPPING[h]: h for h in EXPECTED_HEADERS}
+TEXT_FIELDS = ['description', 'category_type', 'type_1', 'account', 'country', 'location', 'notes']
+DATE_FORMATS = ['%m/%d/%Y', '%Y-%m-%d', '%Y/%m/%d', '%m/%d/%y']
+SHEET_DATE_FORMAT = '%m/%d/%Y'
+EXPECTED_COLUMNS = ['date', 'type_1', 'category_type', 'amount', 'account', 'description',
+                    'country', 'location', 'notes', 'sheet_row', 'original_index',
+                    'year', 'month', 'month_year', 'weekday']
+RETRY_DELAYS = (1, 2, 4)
+
+
+def _secret(section: str, key: Optional[str] = None, default: Any = None) -> Any:
+    """Read st.secrets without raising when no secrets file exists."""
+    try:
+        if section not in st.secrets:
+            return default
+        value = st.secrets[section]
+        if key is None:
+            return value
+        return value.get(key, default) if hasattr(value, 'get') else default
+    except Exception:
+        return default
+
+
+def _resolve_sheet_id() -> str:
+    return _secret("app", "sheet_id", SHEET_ID) or SHEET_ID
+
+
+def _api_error_status(exc: Exception) -> int:
+    """HTTP status of a gspread APIError (0 when unknown)."""
+    resp = getattr(exc, 'response', None)
+    code = getattr(resp, 'status_code', None)
+    if code is None:
+        code = getattr(exc, 'code', None)
+    try:
+        return int(code)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _with_retry(fn, *args, **kwargs):
+    """Call a gspread function, retrying on 429 / 5xx with 1s/2s/4s backoff (3 attempts)."""
+    last_exc = None
+    for attempt, delay in enumerate(RETRY_DELAYS):
+        try:
+            return fn(*args, **kwargs)
+        except APIError as e:
+            status = _api_error_status(e)
+            if not (status == 429 or 500 <= status < 600) or attempt == len(RETRY_DELAYS) - 1:
+                raise
+            last_exc = e
+            logger.warning(f"⚠️ Sheets API {status}, retrying in {delay}s (attempt {attempt + 1}/{len(RETRY_DELAYS)})")
+            time.sleep(delay)
+    raise last_exc  # pragma: no cover
+
+
+def _empty_df() -> pd.DataFrame:
+    df = pd.DataFrame({c: pd.Series(dtype='object') for c in EXPECTED_COLUMNS})
+    df['date'] = pd.to_datetime(df['date'])
+    df['amount'] = df['amount'].astype('float64')
+    df['sheet_row'] = df['sheet_row'].astype('int64')
+    return df
+
+
+def parse_dates(series: pd.Series) -> pd.Series:
+    """Per-cell date parsing with an explicit format list (no inference from the first row)."""
+    text = series.astype(str).str.strip()
+    out = pd.Series(pd.NaT, index=series.index, dtype='datetime64[ns]')
+    for fmt in DATE_FORMATS:
+        mask = out.isna()
+        if not mask.any():
+            break
+        out.loc[mask] = pd.to_datetime(text[mask], format=fmt, errors='coerce')
+    return out
+
+
+def _to_date(value: Any) -> Optional[date]:
+    """Coerce a date-like value (Timestamp/datetime/date/str) to a calendar date, else None."""
+    if value is None:
+        return None
+    try:
+        if isinstance(value, float) and value != value:
+            return None
+        if value is pd.NaT:
+            return None
+    except Exception:
+        pass
+    if isinstance(value, pd.Timestamp):
+        return None if pd.isna(value) else value.date()
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value).strip()
+    if not text or text.lower() in ('nan', 'nat', 'none', 'n/a'):
+        return None
+    for fmt in DATE_FORMATS + ['%Y/%m/%d %H:%M:%S', '%Y-%m-%d %H:%M:%S']:
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _format_sheet_date(value: Any) -> str:
+    """Format a date-like value as MM/DD/YYYY (the sheet's convention); pass through if unparseable."""
+    d = _to_date(value)
+    if d is None:
+        return '' if value is None else str(value)
+    return d.strftime(SHEET_DATE_FORMAT)
+
+
+def _clean_text(value: Any) -> str:
+    if value is None:
+        return ''
+    if isinstance(value, float) and value != value:
+        return ''
+    text = str(value).strip()
+    return '' if text.lower() in ('nan', 'none', 'nat') else text
+
+
+def _sheet_amount_value(value: Any):
+    """Amount as a plain number for the sheet (int when integral), or None if unparseable."""
+    num = parse_amount(value)
+    if num is None:
+        return None
+    return int(num) if float(num).is_integer() else float(num)
+
+
+def _col_letter(n: int) -> str:
+    return gspread.utils.rowcol_to_a1(1, n)[:-1]
+
+
+def _pad(row: List[str], width: int) -> List[str]:
+    row = list(row)
+    return row + [''] * (width - len(row)) if len(row) < width else row
 
 
 class SheetsAPI:
@@ -27,6 +173,8 @@ class SheetsAPI:
         self.client = None
         self.worksheet = None
         self.api_available = False
+        self.read_only = True
+        self.init_error = None
         self._initialize_api()
 
     def _initialize_api(self):
@@ -34,11 +182,17 @@ class SheetsAPI:
         Initialize Google Sheets API with service account credentials
         Falls back gracefully if credentials are not available
         """
+        self.client = None
+        self.worksheet = None
+        self.api_available = False
+        self.read_only = True
+        self.init_error = None
         try:
             # Try to get credentials from Streamlit secrets
-            if "google_sheets" in st.secrets:
+            creds_info = _secret("google_sheets")
+            if creds_info:
                 credentials = Credentials.from_service_account_info(
-                    st.secrets["google_sheets"],
+                    creds_info,
                     scopes=[
                         "https://www.googleapis.com/auth/spreadsheets",
                         "https://www.googleapis.com/auth/drive.readonly"
@@ -47,807 +201,365 @@ class SheetsAPI:
                 self.client = gspread.authorize(credentials)
 
                 # Get sheet ID from secrets if available
-                sheet_id = st.secrets.get("app", {}).get("sheet_id", SHEET_ID)
+                sheet_id = _resolve_sheet_id()
 
                 # Open the spreadsheet and worksheet
-                spreadsheet = self.client.open_by_key(sheet_id)
+                spreadsheet = _with_retry(self.client.open_by_key, sheet_id)
 
-                # Find worksheet by GID
-                self.worksheet = None
-                worksheets = spreadsheet.worksheets()
+                # Find worksheet by GID (no fallback to another worksheet)
+                worksheets = _with_retry(spreadsheet.worksheets)
                 logger.info(f"📋 Available worksheets: {[(ws.title, ws.id) for ws in worksheets]}")
-
                 for ws in worksheets:
-                    logger.info(f"🔍 Checking worksheet: {ws.title} (GID: {ws.id})")
                     if str(ws.id) == str(WORKSHEET_GID):
                         self.worksheet = ws
                         logger.info(f"✅ Found target worksheet: {ws.title}")
                         break
 
-                if self.worksheet:
+                if self.worksheet is not None:
                     self.api_available = True
-                    # Check worksheet has data
-                    try:
-                        all_values = self.worksheet.get_all_values()
-                        row_count = len(all_values)
-                        logger.info(f"✅ Google Sheets API initialized successfully - {row_count} rows available")
-
-                        # Quick check of data structure in this worksheet
-                        if all_values and len(all_values) > 1:
-                            headers = all_values[0]
-                            sample_row = all_values[1] if len(all_values) > 1 else []
-                            logger.info(f"📋 Worksheet '{self.worksheet.title}' headers: {headers}")
-                            logger.info(f"📊 Sample row: {sample_row}")
-
-                            # Check if this worksheet has amount data that sums to ~2.5M
-                            amount_cols = [i for i, h in enumerate(headers) if any(keyword in str(h).lower()
-                                         for keyword in ['amount', '金額', 'money', '錢'])]
-
-                            for col_idx in amount_cols:
-                                col_name = headers[col_idx]
-                                values = [row[col_idx] if col_idx < len(row) else '' for row in all_values[1:]]
-                                numeric_values = []
-                                for val in values:
-                                    try:
-                                        if val and val != '':
-                                            numeric_values.append(float(val))
-                                    except:
-                                        pass
-
-                                if numeric_values:
-                                    total = sum(numeric_values)
-                                    logger.info(f"💰 Worksheet '{self.worksheet.title}' column '{col_name}' total: {total:,.0f}")
-                                    if total > 2000000:
-                                        logger.info(f"🎯 Found large total in worksheet '{self.worksheet.title}': {total:,.0f}")
-
-                    except Exception as e:
-                        logger.warning(f"⚠️ Could not check row count: {e}")
-                        logger.info("✅ Google Sheets API initialized successfully")
+                    self.read_only = False
+                    logger.info("✅ Google Sheets API initialized successfully")
                 else:
-                    logger.error(f"❌ Worksheet with GID {WORKSHEET_GID} not found")
-                    logger.error(f"Available worksheets: {[(ws.title, ws.id) for ws in worksheets]}")
-
-                    # Check other worksheets to see if they have the expected data
-                    logger.warning(f"⚠️ Worksheet GID {WORKSHEET_GID} not found")
-                    logger.info("🔍 Checking other available worksheets...")
-
-                    for ws in worksheets:
-                        try:
-                            logger.info(f"🔍 Checking alternative worksheet: {ws.title} (GID: {ws.id})")
-                            ws_values = ws.get_all_values()
-                            if ws_values and len(ws_values) > 1:
-                                headers = ws_values[0]
-                                # Look for amount columns
-                                amount_cols = [i for i, h in enumerate(headers) if any(keyword in str(h).lower()
-                                             for keyword in ['amount', '金額', 'money', '錢'])]
-
-                                for col_idx in amount_cols:
-                                    col_name = headers[col_idx]
-                                    values = [row[col_idx] if col_idx < len(row) else '' for row in ws_values[1:]]
-                                    numeric_values = []
-                                    for val in values:
-                                        try:
-                                            if val and val != '':
-                                                numeric_values.append(float(val))
-                                        except:
-                                            pass
-
-                                    if numeric_values:
-                                        total = sum(numeric_values)
-                                        logger.info(f"💰 Alternative worksheet '{ws.title}' column '{col_name}' total: {total:,.0f}")
-                                        if total > 2000000:
-                                            logger.error(f"🎯 Found correct data in worksheet '{ws.title}' (GID: {ws.id})!")
-                                            logger.info(f"Total: NT${total:,.0f} - should update config to use GID {ws.id}")
-
-                        except Exception as e:
-                            logger.info(f"Could not check worksheet {ws.title}: {e}")
-
-                    # For now, use the first worksheet as fallback
-                    if worksheets:
-                        self.worksheet = worksheets[0]
-                        logger.info(f"🔄 Using fallback worksheet: {self.worksheet.title} (GID: {self.worksheet.id})")
-                        self.api_available = True
-
+                    self.init_error = f"找不到 GID {WORKSHEET_GID} 的工作表"
+                    logger.error(f"❌ Worksheet with GID {WORKSHEET_GID} not found; "
+                                 f"available: {[(ws.title, ws.id) for ws in worksheets]}")
+                    st.error(f"❌ 找不到 GID {WORKSHEET_GID} 的工作表，已切換為唯讀模式（不會寫入其他工作表）")
             else:
+                self.init_error = "未設定 Google Sheets 憑證"
                 logger.info("ℹ️ No Google Sheets credentials found, using CSV fallback")
 
         except Exception as e:
+            self.init_error = str(e)
             logger.error(f"❌ Failed to initialize Google Sheets API: {str(e)}")
+            self.worksheet = None
             self.api_available = False
+            self.read_only = True
 
-    def load_data(self) -> Optional[pd.DataFrame]:
+    def reconnect(self):
+        """Re-run the API initialisation (resets read-only mode if it succeeds)."""
+        logger.info("🔄 Reconnecting to Google Sheets API...")
+        self._initialize_api()
+        return self.api_available
+
+    # ------------------------------------------------------------------
+    # Reading
+    # ------------------------------------------------------------------
+
+    def load_data(self) -> pd.DataFrame:
         """
-        Load expense data - prioritize API since CSV requires authentication
+        Load expense data - prioritize API since CSV requires authentication.
+        Raises RuntimeError when every source fails (the caller decides what to show;
+        failures must never be cached as an empty frame).
         """
+        errors = []
 
         # Try API first since it's authenticated and available
-        if self.api_available and self.worksheet:
+        if self.api_available and self.worksheet is not None:
             try:
                 logger.info("🚀 Loading data via Google Sheets API...")
                 df = self._load_from_api()
-                if not df.empty:
-                    logger.info(f"✅ API loaded {len(df)} records successfully")
-                    return df
-                else:
-                    logger.warning("⚠️ API returned empty DataFrame")
+                logger.info(f"✅ API loaded {len(df)} records")
+                return df  # an empty sheet is a legitimate (empty) result
             except Exception as e:
                 logger.error(f"❌ API failed: {str(e)}")
-                st.error(f"Google Sheets API 錯誤: {str(e)}")
+                errors.append(f"Google Sheets API 錯誤: {str(e)}")
 
-        # CSV fallback (likely to fail due to authentication)
+        # CSV fallback (attempted exactly once)
         logger.info("🚀 Attempting CSV fallback...")
         try:
             df_csv = self._load_from_csv()
-            if not df_csv.empty:
-                logger.info(f"✅ CSV loaded {len(df_csv)} records successfully")
-                return df_csv
-        except Exception as e:
-            logger.warning(f"⚠️ CSV failed as expected: {str(e)}")
-
-        # Show API status
-        if not self.api_available:
-            st.error("❌ Google Sheets API 不可用")
-            st.info("💡 請確認 Streamlit Cloud secrets 設定正確")
-
-        if not self.worksheet:
-            st.error("❌ 無法連接到工作表")
-            st.info(f"💡 請確認工作表 GID {WORKSHEET_GID} 存在且可訪問")
-
-        # Only try CSV as last resort and warn user
-        st.warning("⚠️ 嘗試 CSV 備用方案 (可能無法存取完整資料)")
-        try:
-            return self._load_from_csv()
+            logger.info(f"✅ CSV loaded {len(df_csv)} records")
+            return df_csv
         except Exception as e:
             logger.error(f"❌ CSV fallback failed: {str(e)}")
-            st.error("❌ 所有資料載入方法均失敗")
-            st.info("💡 請檢查網路連線和 Google Sheets 權限設定")
-            return pd.DataFrame()
+            errors.append(f"CSV 備用方案失敗: {str(e)}")
+
+        if not self.api_available:
+            hint = self.init_error or f"請確認工作表 GID {WORKSHEET_GID} 存在且可訪問"
+            errors.append(f"Google Sheets API 不可用 ({hint})")
+
+        raise RuntimeError("；".join(errors) if errors else "所有資料載入方法均失敗")
 
     def _load_from_api(self) -> pd.DataFrame:
         """Load data directly from Google Sheets API"""
         logger.info("📊 Loading data from Google Sheets API...")
 
         # Get all values from the worksheet
-        all_values = self.worksheet.get_all_values()
-
+        all_values = _with_retry(self.worksheet.get_all_values)
         logger.info(f"📊 Retrieved {len(all_values)} total rows from API")
 
         if not all_values:
             logger.warning("⚠️ No data retrieved from API")
-            return pd.DataFrame()
+            return _empty_df()
 
         # First row is headers
-        headers = all_values[0]
-        data_rows = all_values[1:]
+        headers = [str(h).strip() for h in all_values[0]]
+        # De-duplicate / name empty headers so the DataFrame stays well-formed
+        seen = {}
+        clean_headers = []
+        for i, h in enumerate(headers):
+            name = h or f'_col{i}'
+            if name in seen:
+                seen[name] += 1
+                name = f'{name}_{seen[name]}'
+            else:
+                seen[name] = 0
+            clean_headers.append(name)
+        width = len(clean_headers)
+        data_rows = [_pad(r, width)[:width] for r in all_values[1:]]
 
-        logger.info(f"📋 Headers: {headers}")
-        logger.info(f"📊 Data rows: {len(data_rows)}")
-
-        # Create DataFrame
-        df = pd.DataFrame(data_rows, columns=headers)
-
-        # Show summary before processing
+        df = pd.DataFrame(data_rows, columns=clean_headers)
         logger.info(f"📊 Raw DataFrame shape: {df.shape}")
-        if 'amount' in df.columns or '金額' in df.columns:
-            amount_col = '金額' if '金額' in df.columns else 'amount'
-            # Show raw amount data first
-            sample_amounts = df[amount_col].dropna().head(5).tolist()
-            logger.info(f"💰 Raw amount samples: {sample_amounts}")
-
-            # Convert to numeric for sum calculation - SAFE conversion
-            try:
-                numeric_amounts = pd.to_numeric(df[amount_col], errors='coerce')
-                valid_amounts = numeric_amounts.notna().sum()
-                total = float(numeric_amounts.sum()) if numeric_amounts.notna().any() else 0.0
-                logger.info(f"💰 Initial conversion: {valid_amounts} valid amounts, total: {total}")
-
-                if total > 0:
-                    # Just log, don't show to user
-                    logger.info(f"📊 Raw data loaded: {len(df)} rows, total: NT${total:,.0f}")
-                else:
-                    logger.warning(f"📊 Raw data loaded: {len(df)} rows, total: NT$0 (conversion failed)")
-                    logger.info(f"💡 Sample amounts: {sample_amounts}")
-
-            except Exception as e:
-                logger.error(f"❌ Error calculating initial total: {e}")
-                st.warning(f"📊 載入原始資料: {len(df)} 筆 (金額計算錯誤)")
-        else:
-            st.warning(f"📊 載入原始資料: {len(df)} 筆 (找不到金額欄位)")
 
         # Clean and process the data
         return self._process_data(df, source="api")
 
     def _load_from_csv(self) -> pd.DataFrame:
-        """Load data from CSV export as fallback"""
+        """Load data from CSV export as fallback (raises on failure)"""
         logger.info("📄 Loading data from CSV export...")
 
         # Construct CSV URL with specific GID
         csv_url = SHEET_URL
-        if "google_sheets" in st.secrets and "app" in st.secrets:
-            sheet_id = st.secrets["app"].get("sheet_id", SHEET_ID)
+        sheet_id = _resolve_sheet_id()
+        if sheet_id and sheet_id != SHEET_ID:
             csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={WORKSHEET_GID}"
 
         logger.info(f"📄 CSV URL: {csv_url}")
 
+        response = requests.get(csv_url, timeout=10)
+        logger.info(f"📄 CSV response status: {response.status_code}")
+        response.raise_for_status()
+
+        content_type = response.headers.get('content-type', '')
+        if 'text/html' in content_type:
+            logger.warning("📄 CSV export returned HTML (authentication required)")
+            raise RuntimeError("CSV export requires authentication")
+
+        # Decode explicitly as UTF-8 before any header check
         try:
-            # Download CSV data with proper UTF-8 handling
-            response = requests.get(csv_url, timeout=10)
-            logger.info(f"📄 CSV response status: {response.status_code}")
+            csv_text = response.content.decode('utf-8')
+        except UnicodeDecodeError:
+            csv_text = response.content.decode('utf-8', errors='replace')
 
-            # Check if we got redirected or have authentication issues
-            if response.status_code == 200:
-                content_type = response.headers.get('content-type', '')
-                if 'text/html' in content_type:
-                    logger.warning("📄 CSV export returned HTML (authentication required)")
-                    # Don't return empty - let it fall back to API
-                    raise Exception("CSV export requires authentication")
+        if '日期' not in csv_text[:500] or '金額' not in csv_text[:500]:
+            logger.warning(f"📄 CSV response does not contain expected headers: {csv_text[:200]!r}")
+            raise RuntimeError("CSV 內容不含預期欄位")
 
-                # Check if response contains actual CSV data
-                preview = response.text[:200]
-                if '日期,類型_1,類型_2,金額' not in preview:
-                    logger.warning("📄 CSV response does not contain expected headers")
-                    logger.info(f"📄 Response preview: {preview}")
-                    return pd.DataFrame()
-
-            response.raise_for_status()
-
-            # Try multiple encoding approaches
-            try:
-                # Method 1: Force UTF-8 encoding
-                response.encoding = 'utf-8'
-                csv_text = response.text
-            except UnicodeDecodeError:
-                try:
-                    # Method 2: Use raw bytes with UTF-8
-                    csv_text = response.content.decode('utf-8')
-                except UnicodeDecodeError:
-                    # Method 3: Use raw bytes with UTF-8 and ignore errors
-                    csv_text = response.content.decode('utf-8', errors='replace')
-
-        except Exception as e:
-            logger.warning(f"📄 CSV fallback failed: {str(e)}")
-            st.warning("⚠️ CSV 資料載入失敗，請確認 Google Sheets API 設定正確")
-            return pd.DataFrame()
-
-        # Read into DataFrame with proper handling of quoted numbers
+        # Read into DataFrame; keep blank lines so line i maps to sheet row i+2
         from io import StringIO
-        df = pd.read_csv(StringIO(csv_text), quotechar='"', skipinitialspace=True)
+        df = pd.read_csv(StringIO(csv_text), quotechar='"', skipinitialspace=True,
+                         dtype=str, keep_default_na=False, skip_blank_lines=False)
 
-        # Try to fix column encoding if needed
-        if df.columns.size > 0 and any('\\x' in str(col) for col in df.columns):
-            logger.info("🔧 Attempting to fix UTF-8 encoding in column names...")
-            new_columns = []
-            for col in df.columns:
+        # Try to fix column encoding if needed (mojibake headers)
+        new_columns = []
+        for col in df.columns:
+            fixed = str(col).strip()
+            if fixed not in COLUMN_MAPPING:
                 try:
-                    # Try to decode UTF-8 encoded strings
-                    if isinstance(col, str) and '\\x' in col:
-                        # This handles the æ\x97¥æ\x9c\x9f format
-                        fixed_col = col.encode('latin-1').decode('utf-8')
-                        new_columns.append(fixed_col)
-                        logger.info(f"✅ Fixed column: {col} → {fixed_col}")
-                    else:
-                        new_columns.append(col)
-                except:
-                    new_columns.append(col)
-            df.columns = new_columns
+                    candidate = fixed.encode('latin-1').decode('utf-8')
+                    if candidate in COLUMN_MAPPING:
+                        logger.info(f"✅ Fixed column: {col} → {candidate}")
+                        fixed = candidate
+                except (UnicodeEncodeError, UnicodeDecodeError):
+                    pass
+            new_columns.append(fixed)
+        df.columns = new_columns
 
         return self._process_data(df, source="csv")
 
     def _process_data(self, df: pd.DataFrame, source: str) -> pd.DataFrame:
         """
-        Clean and process the raw data from Google Sheets
+        Clean and process the raw data from Google Sheets.
+        Output contract: 'amount' float64 (unparseable -> NaN), 'date' datetime64 (explicit formats),
+        text fields str with '' for missing, 'sheet_row' = 1-based sheet row (header = row 1).
         """
-        logger.info(f"🧹 Processing data from {source}...")
+        logger.info(f"🧹 Processing data from {source}: {df.shape}")
 
-        # Show shape before cleaning
-        initial_rows = len(df)
-        logger.info(f"📊 Before cleaning: {df.shape}")
-
-        # Save original for comparison
-        df_original = df.copy()
-
-        # Remove completely empty rows and columns (but be less aggressive)
-        df = df.dropna(how='all')
-        # Only remove columns that are completely empty
-        df = df.loc[:, df.notna().any()]
-
-        empty_rows_removed = initial_rows - len(df)
-        logger.info(f"📊 After removing empty rows/cols: {df.shape} (removed {empty_rows_removed} completely empty rows)")
-
-        # Debug: Show actual column names
-        logger.info(f"📋 Actual columns in sheet: {list(df.columns)}")
-        if not df.empty:
-            logger.info(f"📊 Sample data (first row): {df.head(1).to_dict('records')}")
-            # Show more samples to understand the data structure
-            logger.info(f"📊 Sample data (rows 1-5): {df.head(5)[list(df.columns)[:5]].to_dict('records')}")
-
-        # Check for amount-related columns specifically
-        amount_related_cols = [col for col in df.columns if any(keyword in str(col).lower()
-                              for keyword in ['amount', '金額', 'money', '錢', 'cost', '費用', 'expense'])]
-        logger.info(f"💰 Found amount-related columns: {amount_related_cols}")
-
-        # Show sample values from each amount column
-        for col in amount_related_cols:
-            sample_values = df[col].dropna().head(10).tolist()
-            logger.info(f"💰 Sample values from '{col}': {sample_values}")
-
-            # Show data types and unique values
-            col_dtypes = df[col].dtype
-            unique_values = df[col].nunique()
-            null_count = df[col].isnull().sum()
-            logger.info(f"💰 Column '{col}' info: dtype={col_dtypes}, unique={unique_values}, nulls={null_count}")
-
-            # Try to sum this column to see totals
-            try:
-                numeric_values = pd.to_numeric(df[col], errors='coerce')
-                col_total = float(numeric_values.sum()) if numeric_values.notna().any() else 0.0
-                valid_count = numeric_values.notna().sum()
-                logger.info(f"💰 Column '{col}' total: {col_total} ({valid_count} valid values)")
-
-                # Log findings but don't show to user
-                if col_total > 2000000:
-                    logger.info(f"🎯 FOUND LIKELY CORRECT AMOUNT COLUMN: '{col}' with total {col_total}")
-                elif col_total > 100000:
-                    logger.info(f"💰 Column '{col}' has reasonable total: {col_total}")
-
-            except Exception as e:
-                logger.info(f"💰 Could not calculate total for '{col}': {e}")
-
-        # If no amount-related columns found, show ALL columns
-        if not amount_related_cols:
-            logger.warning("💰 No amount-related columns found! Checking ALL columns...")
-            st.warning("⚠️ 找不到金額相關欄位！檢查所有欄位...")
-
-            for col in df.columns:
-                try:
-                    numeric_test = pd.to_numeric(df[col], errors='coerce')
-                    col_total = float(numeric_test.sum()) if numeric_test.notna().any() else 0.0
-                    valid_count = numeric_test.notna().sum()
-
-                    if valid_count > 10 and col_total > 1000:  # If column has numeric data
-                        logger.info(f"💰 Numeric column '{col}': total={col_total}, valid={valid_count}")
-                        if col_total > 100000:
-                            st.info(f"💡 可能的金額欄位: '{col}' 總額: NT${col_total:,.0f}")
-
-                except:
-                    pass
-
-        # Apply column mapping (Chinese to English) - only for columns that exist
-        existing_mapping = {k: v for k, v in COLUMN_MAPPING.items() if k in df.columns}
-
-        logger.info(f"🔄 Column mapping analysis:")
-        logger.info(f"   - Available in sheet: {list(df.columns)}")
-        logger.info(f"   - Mapping to apply: {existing_mapping}")
-
-        # Before mapping, check if we have the expected amount column
-        if '金額' in df.columns:
-            sample_amounts = df['金額'].dropna().head(10).tolist()
-            logger.info(f"💰 Sample '金額' values BEFORE mapping: {sample_amounts}")
-
-        df = df.rename(columns=existing_mapping)
-
-        logger.info(f"✅ Mapped columns: {existing_mapping}")
-        logger.info(f"🔄 Final columns after mapping: {list(df.columns)}")
-
-        # After mapping, check the 'amount' column
-        if 'amount' in df.columns:
-            sample_amounts = df['amount'].dropna().head(10).tolist()
-            logger.info(f"💰 Sample 'amount' values AFTER mapping: {sample_amounts}")
-
-        # Also check if there are any unmapped amount columns
-        remaining_amount_cols = [col for col in df.columns if any(keyword in str(col).lower()
-                                for keyword in ['amount', '金額', 'money', '錢', 'cost', '費用']) and col != 'amount']
-        if remaining_amount_cols:
-            logger.warning(f"⚠️ Found unmapped amount-related columns: {remaining_amount_cols}")
-            st.warning(f"⚠️ 發現未對應的金額相關欄位: {remaining_amount_cols}")
-
-            for col in remaining_amount_cols:
-                sample_vals = df[col].dropna().head(5).tolist()
-                logger.info(f"💰 Unmapped column '{col}' samples: {sample_vals}")
-
-        # Check for critical fields but don't be too aggressive about removing data
-        critical_fields = ['date', 'amount']
-        available_critical = [field for field in critical_fields if field in df.columns]
-
-        logger.info(f"🎯 Critical fields available: {available_critical}")
-
-        if available_critical:
-            # MINIMAL filtering - only remove completely useless rows
-            rows_before = len(df)
-
-            if 'date' in df.columns and 'amount' in df.columns:
-                # Analyze what types of data we have
-                empty_dates = (df['date'].isna() | (df['date'] == '')).sum()
-                empty_amounts = (df['amount'].isna() | (df['amount'] == '')).sum()
-                both_empty = ((df['date'].isna() | (df['date'] == '')) &
-                             (df['amount'].isna() | (df['amount'] == ''))).sum()
-
-                logger.info(f"📊 Data analysis before filtering:")
-                logger.info(f"   - Empty dates: {empty_dates}")
-                logger.info(f"   - Empty amounts: {empty_amounts}")
-                logger.info(f"   - Both empty: {both_empty}")
-
-                # VERY MINIMAL filtering - only remove rows where BOTH date and amount are completely empty
-                # AND where there's no other useful data (like description)
-                completely_useless = (
-                    (df['date'].isna() | (df['date'] == '')) &
-                    (df['amount'].isna() | (df['amount'] == '')) &
-                    (df.get('description', '').isna() | (df.get('description', '') == ''))
-                ).sum()
-
-                logger.info(f"📊 Completely useless rows (no date, amount, or description): {completely_useless}")
-
-                # Only remove truly empty rows
-                df = df[~(
-                    (df['date'].isna() | (df['date'] == '')) &
-                    (df['amount'].isna() | (df['amount'] == '')) &
-                    (df.get('description', '').isna() | (df.get('description', '') == ''))
-                )]
-
-                logger.info(f"📊 Keeping rows with ANY useful data (date, amount, or description)")
-
-            elif 'date' in df.columns:
-                empty_dates = (df['date'].isna() | (df['date'] == '')).sum()
-                logger.info(f"📊 Empty dates: {empty_dates}")
-                # Keep all rows - even with empty dates, they might have other useful data
-                logger.info(f"📊 Keeping all rows even with empty dates - user can filter later")
-            elif 'amount' in df.columns:
-                empty_amounts = (df['amount'].isna() | (df['amount'] == '')).sum()
-                logger.info(f"📊 Empty amounts: {empty_amounts}")
-                # Keep all rows - even with empty amounts, they might have other useful data
-                logger.info(f"📊 Keeping all rows even with empty amounts - user can filter later")
-
-            rows_after = len(df)
-            logger.info(f"📊 First filter: removed {rows_before - rows_after} rows with missing critical data ({rows_after} remaining)")
-        else:
-            logger.warning(f"⚠️ No critical fields found! Available columns: {list(df.columns)}")
-            st.warning(f"找不到必要欄位 (date/amount)。實際欄位: {list(df.columns)}")
-
-        if df.empty:
-            logger.warning("⚠️ No valid data found after cleaning")
-            return df
-
-        # Data type conversion
         try:
-            # Convert date column if it exists
-            date_cols = [col for col in df.columns if 'date' in col.lower() or '日期' in col]
-            if date_cols:
-                date_col = date_cols[0]
-                logger.info(f"📅 Converting date column: {date_col}")
+            df = df.copy()
+            # Sheet row number BEFORE any row is dropped (data index 0 -> sheet row 2)
+            df['sheet_row'] = (pd.RangeIndex(len(df)) + 2).astype('int64')
+            df['original_index'] = pd.RangeIndex(len(df))
 
-                # Show sample date formats before conversion
-                sample_dates = df[date_col].dropna().head(10).tolist()
-                logger.info(f"📅 Sample date formats: {sample_dates}")
+            # Apply column mapping (Chinese to English) - only for columns that exist
+            existing_mapping = {k: v for k, v in COLUMN_MAPPING.items() if k in df.columns}
+            df = df.rename(columns=existing_mapping)
+            # If two source columns mapped to the same name keep the first
+            df = df.loc[:, ~pd.Index(df.columns).duplicated()]
+            logger.info(f"🔄 Columns after mapping: {list(df.columns)}")
 
-                df['date'] = pd.to_datetime(df[date_col], errors='coerce')
+            missing = [c for c in ['date', 'amount', 'description'] if c not in df.columns]
+            if missing:
+                logger.warning(f"⚠️ Missing expected columns: {missing}; actual: {list(df.columns)}")
+                st.warning(f"⚠️ 找不到必要欄位 {missing}。實際欄位: {list(df.columns)}")
 
-                # Check conversion success
-                valid_dates = df['date'].notna().sum()
-                invalid_dates = df['date'].isna().sum()
-                logger.info(f"📅 Date conversion: {valid_dates} valid, {invalid_dates} failed")
-
-            # Convert amount column if it exists - but be smarter about which one to use
-            amount_cols = [col for col in df.columns if 'amount' in col.lower() or '金額' in col]
-
-            # If we have multiple amount columns, try to find the one with the highest total
-            best_amount_col = None
-            best_total = 0
-
-            if amount_cols:
-                logger.info(f"💰 Found amount columns: {amount_cols}")
-
-                for col in amount_cols:
-                    try:
-                        test_numeric = pd.to_numeric(df[col], errors='coerce')
-                        test_total = test_numeric.sum()
-                        valid_count = test_numeric.notna().sum()
-                        logger.info(f"💰 Column '{col}': total={test_total:,.0f}, valid={valid_count}")
-
-                        if test_total > best_total:
-                            best_total = test_total
-                            best_amount_col = col
-
-                    except Exception as e:
-                        logger.info(f"💰 Could not test column '{col}': {e}")
-
-                amount_col = best_amount_col if best_amount_col else amount_cols[0]
-                logger.info(f"💰 Selected best amount column: {amount_col} (total: {best_total:,.0f})")
-
-                # If the best total is still way off from expected ~2.5M, warn user
-                try:
-                    best_total_float = float(best_total) if best_total else 0.0
-                    if best_total_float < 1000000:
-                        logger.warning(f"💰 Amount total {best_total_float} is much lower than expected ~2.5M")
-                    else:
-                        logger.info(f"✅ Found correct amount total: NT${best_total_float:,.0f}")
-                except Exception as e:
-                    logger.error(f"❌ Error formatting best total: {e}")
-                    st.warning("⚠️ 金額計算發生錯誤")
-                    st.info("💡 可能需要檢查工作表或欄位設定")
-
-            else:
-                logger.error("❌ No amount column found!")
-                st.error("❌ 找不到金額欄位!")
-                return df
-
-                # Show some sample values before conversion
-                sample_amounts = df[amount_col].head(10).tolist()
-                logger.info(f"💰 Sample amount values: {sample_amounts}")
-
-                # Check for empty/zero amounts before conversion
-                empty_amounts = (df[amount_col].isna() | (df[amount_col] == '') | (df[amount_col] == '0')).sum()
-                logger.info(f"💰 Empty/zero amounts before conversion: {empty_amounts}")
-
-                # Clean amount data before conversion - handle formatted numbers
-                logger.info(f"💰 Cleaning amount data format...")
-
-                def clean_amount(value):
-                    """Clean amount values - handle both CSV and API formats"""
-                    try:
-                        if pd.isna(value) or value == '' or value is None:
-                            return None
-
-                        # Convert to string first
-                        str_val = str(value).strip()
-
-                        # If it's already a number, try converting directly first
-                        try:
-                            return float(str_val)
-                        except:
-                            pass
-
-                        # Handle corrupted API format: '240.00′,′240.00 ′ , ′ 26,495.00'
-                        # Extract all numeric values and take the largest one
-                        import re
-
-                        # Find all patterns that look like numbers (with or without commas)
-                        number_pattern = r'[\d,]+\.?\d*'
-                        matches = re.findall(number_pattern, str_val)
-
-                        amounts = []
-                        for match in matches:
-                            try:
-                                # Clean each found number
-                                clean_num = match.replace(',', '')
-                                if clean_num and clean_num != '':
-                                    amounts.append(float(clean_num))
-                            except:
-                                continue
-
-                        # Return the largest amount found
-                        if amounts:
-                            result = max(amounts)
-                            logger.info(f"💰 Cleaned '{str_val}' → {result}")
-                            return result
-
-                        # Fallback: simple cleaning for normal CSV data
-                        str_val = str_val.replace('"', '')  # Remove quotes
-                        str_val = str_val.replace(',', '')  # Remove commas
-                        str_val = str_val.replace('$', '')  # Remove dollar signs
-                        str_val = str_val.strip()
-
-                        if str_val and str_val not in ['', '0', '0.0', '0.00']:
-                            return float(str_val)
-                        else:
-                            return None
-
-                    except Exception as e:
-                        logger.warning(f"Could not clean amount value '{value}': {e}")
-                        return None
-
-                # Apply cleaning function
-                logger.info(f"💰 Applying cleaning function to {amount_col}")
-                df['amount'] = df[amount_col].apply(clean_amount)
-
-                # Check cleaning results
-                valid_after_cleaning = df['amount'].notna().sum()
-                logger.info(f"💰 Valid amounts after cleaning: {valid_after_cleaning}")
-
-                # If cleaning failed completely, try simple numeric conversion as fallback
-                if valid_after_cleaning == 0:
-                    logger.warning("💰 Cleaning failed completely, trying simple conversion...")
-                    df['amount'] = pd.to_numeric(df[amount_col], errors='coerce')
-
-                    valid_after_simple = df['amount'].notna().sum()
-                    logger.info(f"💰 Valid amounts after simple conversion: {valid_after_simple}")
-
-                    # If that also failed, try one more approach - maybe the data is already numeric
-                    if valid_after_simple == 0:
-                        logger.warning("💰 Simple conversion also failed, checking raw data...")
-                        # Show what the actual data looks like
-                        sample_raw = df[amount_col].head(10).tolist()
-                        logger.info(f"💰 Raw sample data: {sample_raw}")
-
-                        # Try to convert directly without any cleaning
-                        for i, val in enumerate(sample_raw[:3]):
-                            logger.info(f"💰 Raw value {i}: '{val}' (type: {type(val)})")
-
-                        # If the column exists but has no valid numbers, fill with 0
-                        df['amount'] = 0
-                        logger.warning("💰 Setting all amounts to 0 - data conversion failed")
-                        st.error("❌ 無法轉換金額資料 - 所有金額設為 0")
-                        st.info(f"💡 原始資料範例: {sample_raw[:3]}")
-
-                # Final check
-                final_valid = df['amount'].notna().sum()
-                if final_valid > 0:
-                    final_total = float(df['amount'].sum())
-                    logger.info(f"💰 Final conversion result: {final_valid} valid amounts, total: {final_total}")
-                else:
-                    logger.error("💰 No valid amounts found after all conversion attempts")
-
-                # Show cleaning results - FIX formatting error
-                cleaned_valid = df['amount'].notna().sum()
-                try:
-                    cleaned_total = float(df['amount'].sum()) if df['amount'].notna().any() else 0
-                except:
-                    cleaned_total = 0
-
-                logger.info(f"💰 After cleaning: {cleaned_valid} valid amounts, total: {cleaned_total}")
-
-                # Show before/after samples to verify cleaning worked
-                if len(df) > 0:
-                    logger.info("💰 Cleaning examples:")
-                    for i in range(min(5, len(df))):
-                        if not pd.isna(df.iloc[i][amount_col]):
-                            original = df.iloc[i][amount_col]
-                            cleaned = df.iloc[i]['amount']
-                            logger.info(f"   '{original}' → {cleaned}")
-
-                # If total is now much higher, we found the issue
-                if cleaned_total > 2000000:
-                    logger.info(f"🎯 SUCCESS: Found correct total after cleaning: {cleaned_total}")
-                    st.success(f"✅ 資料清理成功！正確總額: NT${cleaned_total:,.0f}")
-                elif cleaned_total < 1000000:
-                    logger.warning(f"⚠️ Total still low after cleaning: {cleaned_total}")
-                    st.warning(f"⚠️ 清理後總額仍偏低: NT${cleaned_total:,.0f}")
-
-                    # Show more debugging info - SAFE formatting
-                    unique_formats = df[amount_col].dropna().astype(str).str.strip().value_counts().head(10)
-                    logger.info(f"💰 Most common amount formats in sheet: {dict(unique_formats)}")
-                    st.info("🔍 檢查金額格式 - 查看日誌了解詳細資訊")
-
-                # Show conversion results
-                valid_amounts = df['amount'].notna().sum()
-                zero_amounts = (df['amount'] == 0).sum()
-                invalid_amounts = df['amount'].isna().sum()
-                total_amount = df['amount'].sum()
-                logger.info(f"💰 After conversion:")
-                logger.info(f"   - Valid amounts: {valid_amounts}")
-                logger.info(f"   - Zero amounts: {zero_amounts}")
-                logger.info(f"   - Invalid amounts: {invalid_amounts}")
-                logger.info(f"   - Total: {total_amount:,.0f}")
-
-                # If we have many zero amounts, that might explain the filtering
-                if zero_amounts > 100:
-                    logger.info(f"💰 Warning: {zero_amounts} zero-amount records found - these might be placeholder rows")
-
-                # If total is still very low, check if we missed any amount columns
-                if total_amount < 1000000:
-                    logger.warning(f"💰 CRITICAL: Total amount {total_amount:,.0f} is too low!")
-
-                    # Check ALL columns for numeric data that might be amounts
-                    logger.info("🔍 Checking all columns for potential amount data...")
-                    for col in df.columns:
-                        try:
-                            numeric_test = pd.to_numeric(df[col], errors='coerce')
-                            col_total = numeric_test.sum()
-                            valid_count = numeric_test.notna().sum()
-
-                            if col_total > 1000000:  # If this column has a large total
-                                logger.warning(f"🎯 POTENTIAL AMOUNT COLUMN: '{col}' total={col_total:,.0f}")
-                                st.error(f"🎯 發現可能的金額欄位: '{col}' 總額: NT${col_total:,.0f}")
-                                st.info(f"💡 可能需要更新欄位對應設定")
-
-                        except:
-                            pass
-
-            # Final validation - only remove rows where critical converted data is invalid
-            if 'date' in df.columns and 'amount' in df.columns:
-                rows_before = len(df)
-
-                # Analyze what will be dropped
-                invalid_dates = df['date'].isna().sum()
-                invalid_amounts = df['amount'].isna().sum()
-                both_invalid = (df['date'].isna() & df['amount'].isna()).sum()
-                either_invalid = (df['date'].isna() | df['amount'].isna()).sum()
-
-                logger.info(f"📊 Final validation analysis:")
-                logger.info(f"   - Invalid dates after conversion: {invalid_dates}")
-                logger.info(f"   - Invalid amounts after conversion: {invalid_amounts}")
-                logger.info(f"   - Both invalid: {both_invalid}")
-                logger.info(f"   - Either invalid: {either_invalid}")
-
-                # Be more selective about what we drop
-                # Option 1: Only drop if BOTH are invalid
-                df_strict = df.dropna(subset=['date', 'amount'])
-
-                # Option 2: Keep rows with valid amounts even if dates are invalid
-                df_lenient = df[df['amount'].notna()]
-
-                rows_strict = len(df_strict)
-                rows_lenient = len(df_lenient)
-
-                logger.info(f"📊 Filtering options:")
-                logger.info(f"   - Strict (both valid): {rows_strict} rows")
-                logger.info(f"   - Lenient (amount valid): {rows_lenient} rows")
-
-                # Use VERY lenient filtering - only remove rows that are completely useless
-                # Keep any row that has EITHER a valid date OR a valid amount
-                df_ultra_lenient = df[(df['date'].notna()) | (df['amount'].notna())]
-
-                rows_ultra = len(df_ultra_lenient)
-                logger.info(f"📊 Filtering options comparison:")
-                logger.info(f"   - Ultra lenient (date OR amount valid): {rows_ultra} rows")
-
-                # Use ultra-lenient filtering to preserve maximum data
-                df = df_ultra_lenient
-                rows_after = len(df)
-
-                logger.info(f"📊 Final filter: removed {rows_before - rows_after} rows (completely empty only)")
-
-                if len(df) > 0:
-                    try:
-                        final_total = float(df['amount'].sum()) if df['amount'].notna().any() else 0.0
-                        logger.info(f"💰 Final total after all processing: {final_total}")
-                        # Don't show processing details to user
-                    except Exception as e:
-                        logger.error(f"❌ Error calculating final total: {e}")
-
-                    # Log summary of what was filtered out
-                    if rows_before > rows_after:
-                        filtered_count = rows_before - rows_after
-                        logger.info(f"📊 Final filter: removed {filtered_count} invalid amount records")
-
-                    # Log filtering summary without showing to user
-                    if source == "api":
-                        original_rows = 1577  # From the debug message
-                        total_filtered = original_rows - len(df)
-                        if total_filtered > 0:
-                            logger.info(f"📊 Data pipeline summary: {original_rows} → {len(df)} rows (filtered {total_filtered})")
-            elif 'amount' in df.columns:
-                # If only amount exists, just filter by amount
-                rows_before = len(df)
-                df = df[df['amount'].notna()]
-                rows_after = len(df)
-
-                if len(df) > 0:
-                    try:
-                        final_total = float(df['amount'].sum()) if df['amount'].notna().any() else 0.0
-                        logger.info(f"💰 Final total after all processing: {final_total}")
-                        # Don't show processing details to user
-                    except Exception as e:
-                        logger.error(f"❌ Error calculating final total: {e}")
-
-                    total_filtered = rows_before - rows_after
-                    if total_filtered > 0:
-                        logger.info(f"📊 Filter summary: {total_filtered} records filtered (invalid amounts)")
-            else:
-                if len(df) > 0:
-                    st.success(f"✅ 處理完成: {len(df)} 筆記錄")
-
-            # Add derived fields for analysis (only if date column exists)
-            if 'date' in df.columns:
-                df['year'] = df['date'].dt.year
-                df['month'] = df['date'].dt.month
-                df['month_year'] = df['date'].dt.to_period('M')
-                df['weekday'] = df['date'].dt.day_name()
-
-            # Ensure text fields are strings (only for fields that exist)
-            text_fields = ['description', 'category_type', 'type_1', 'account', 'country', 'location', 'notes']
-            for field in text_fields:
+            # Text fields: NaN/None -> '' (never the literal 'nan')
+            for field in TEXT_FIELDS:
                 if field in df.columns:
-                    df[field] = df[field].astype(str).fillna('')
+                    df[field] = df[field].map(_clean_text)
+                else:
+                    df[field] = ''
 
-            logger.info(f"✅ Processed {len(df)} expense records")
+            # Amount: tolerant parse ('26,495.00', 'NT$1,200'); unparseable -> NaN (consumers decide)
+            if 'amount' in df.columns:
+                raw_amount = df['amount']
+                df['amount'] = pd.to_numeric(raw_amount.map(parse_amount), errors='coerce').astype('float64')
+                bad = int(df['amount'].isna().sum() - raw_amount.map(_clean_text).eq('').sum())
+                if bad > 0:
+                    logger.warning(f"💰 {bad} amount cells could not be parsed")
+            else:
+                df['amount'] = pd.Series(float('nan'), index=df.index, dtype='float64')
+
+            # Date: explicit per-cell formats
+            if 'date' in df.columns:
+                raw_date = df['date']
+                df['date'] = parse_dates(raw_date)
+                bad_dates = int(df['date'].isna().sum() - raw_date.map(_clean_text).eq('').sum())
+                if bad_dates > 0:
+                    logger.warning(f"📅 {bad_dates} date cells could not be parsed")
+            else:
+                df['date'] = pd.Series(pd.NaT, index=df.index, dtype='datetime64[ns]')
+
+            # Drop rows with neither a usable date nor a usable amount nor a description
+            rows_before = len(df)
+            keep = df['date'].notna() | df['amount'].notna() | df['description'].ne('')
+            df = df[keep]
+            logger.info(f"📊 Removed {rows_before - len(df)} empty rows; {len(df)} remaining")
+
+            # Add derived fields for analysis
+            df['year'] = df['date'].dt.year
+            df['month'] = df['date'].dt.month
+            df['month_year'] = df['date'].dt.to_period('M')
+            df['weekday'] = df['date'].dt.day_name()
+
+            df['sheet_row'] = df['sheet_row'].astype('int64')
+
+            total = float(df['amount'].sum()) if df['amount'].notna().any() else 0.0
+            logger.info(f"✅ Processed {len(df)} expense records, total NT${total:,.0f}")
+            return df
 
         except Exception as e:
             logger.error(f"❌ Error processing data: {str(e)}")
-            st.error(f"資料處理錯誤: {str(e)}")
-            # Return empty DataFrame with expected columns if processing fails
-            return pd.DataFrame(columns=['date', 'amount', 'description', 'account'])
+            raise RuntimeError(f"資料處理錯誤: {str(e)}") from e
 
-        return df
+    # ------------------------------------------------------------------
+    # Writing
+    # ------------------------------------------------------------------
+
+    def _check_writable(self) -> bool:
+        if not self.api_available or self.read_only:
+            st.error("❌ Google Sheets API 未設定或不可用（唯讀模式）")
+            st.info("💡 請確認已在 Streamlit Cloud 設定 secrets，或本地設定 service account 金鑰")
+            return False
+        if self.worksheet is None:
+            st.error(f"❌ 無法連接到工作表 (GID {WORKSHEET_GID})")
+            st.info("💡 請確認 Google Sheet 已與 service account 共用，且有編輯權限")
+            return False
+        return True
+
+    def _header_map(self) -> Optional[Tuple[Dict[str, int], int]]:
+        """
+        Read the header row and map internal column names -> 0-based column index.
+        Returns (map, header_width) or None (with st.error) if the 9 expected headers are missing.
+        """
+        header = [str(h).strip() for h in _with_retry(self.worksheet.row_values, 1)]
+        missing = [h for h in EXPECTED_HEADERS if h not in header]
+        if missing:
+            logger.error(f"❌ Sheet header missing expected columns {missing}: {header}")
+            st.error(f"❌ 工作表標題列缺少欄位 {missing}，為避免寫錯欄位已取消操作")
+            return None
+        return {COLUMN_MAPPING[h]: header.index(h) for h in EXPECTED_HEADERS}, len(header)
+
+    @staticmethod
+    def _cell_value(field: str, value: Any):
+        if field == 'date':
+            return _format_sheet_date(value)
+        if field == 'amount':
+            num = _sheet_amount_value(value)
+            return '' if num is None else num
+        return _clean_text(value)
+
+    @staticmethod
+    def _row_matches(row: List[str], header_map: Dict[str, int], original: Dict) -> bool:
+        """Does a sheet row match the record as loaded (description, amount, calendar day)?"""
+        def cell(field):
+            idx = header_map[field]
+            return row[idx] if idx < len(row) else ''
+
+        # A missing or completely blank row never "matches" anything, even a
+        # record whose own description/amount/date are blank or unparseable.
+        if not any(_clean_text(c) for c in row):
+            return False
+
+        if _clean_text(cell('description')) != _clean_text(original.get('description', '')):
+            return False
+
+        sheet_amt = parse_amount(cell('amount'))
+        orig_amt = parse_amount(original.get('amount'))
+        if sheet_amt is None or orig_amt is None:
+            if not (sheet_amt is None and orig_amt is None):
+                return False
+        elif abs(sheet_amt - orig_amt) >= 0.5:
+            return False
+
+        # Calendar day must agree. If the record was loaded with an
+        # unparseable date, the cell must still be unparseable (and vice
+        # versa): a parseable date in only one of them means a different row.
+        sheet_date = _to_date(cell('date'))
+        orig_date = _to_date(original.get('date'))
+        if (sheet_date is None) != (orig_date is None):
+            return False
+        if sheet_date is not None and sheet_date != orig_date:
+            return False
+        return True
+
+    def _locate_row(self, sheet_row: Any, original: Dict, header_map: Dict[str, int]
+                    ) -> Optional[Tuple[int, List[str]]]:
+        """
+        Verify that row `sheet_row` still holds `original`; otherwise search for a UNIQUE match.
+        Returns (row_number, current_row_values) or None (with st.error). Never falls back positionally.
+        """
+        try:
+            n = int(sheet_row)
+        except (TypeError, ValueError):
+            n = 0
+        if n >= 2:
+            try:
+                current = _with_retry(self.worksheet.row_values, n)
+            except APIError as e:
+                # e.g. 400 when the row is beyond the sheet's current grid
+                # (row deleted and grid trimmed): fall through to the search.
+                logger.warning(f"⚠️ Could not read row {n} ({e}); searching instead")
+                current = None
+            if current is not None:
+                if self._row_matches(current, header_map, original):
+                    return n, list(current)
+                logger.warning(f"⚠️ Row {n} no longer matches the selected record: {current}")
+
+        # Search for a unique (date, description, amount) match
+        all_values = _with_retry(self.worksheet.get_all_values)
+        matches = [(i + 1, row) for i, row in enumerate(all_values)
+                   if i >= 1 and self._row_matches(row, header_map, original)]
+        if len(matches) == 1:
+            logger.info(f"🎯 Record relocated to sheet row {matches[0][0]}")
+            return int(matches[0][0]), list(matches[0][1])
+        desc = _clean_text(original.get('description', ''))
+        if not matches:
+            st.error(f"❌ 找不到記錄「{desc}」，可能已被刪除或修改。請重新整理資料後再試")
+        else:
+            st.error(f"❌ 記錄「{desc}」在工作表中有 {len(matches)} 筆相同資料，無法確定要修改哪一筆。請重新整理資料後再試")
+        return None
+
+    @staticmethod
+    def _explain_write_error(e: Exception, action: str):
+        error_msg = str(e)
+        if "403" in error_msg:
+            st.error("❌ 權限不足：請確認 Google Sheet 已與 service account 共用")
+        elif "404" in error_msg:
+            st.error("❌ 找不到工作表：請確認 Sheet ID 和 GID 正確")
+        else:
+            st.error(f"❌ {action}失敗: {error_msg}")
+            st.info("💡 請重新整理頁面後重試")
 
     def add_expense(self, expense_data: Dict) -> bool:
         """
@@ -855,247 +567,174 @@ class SheetsAPI:
         Returns True if successful, False otherwise
         """
         logger.info(f"🔍 Attempting to add expense: {expense_data}")
-
-        if not self.api_available:
-            st.error("❌ Google Sheets API 未設定或不可用")
-            st.info("💡 請確認已在 Streamlit Cloud 設定 secrets，或本地設定 service account 金鑰")
-            return False
-
-        if not self.worksheet:
-            st.error("❌ 無法連接到工作表")
-            st.info("💡 請確認 Google Sheet 已與 service account 共用，且有編輯權限")
+        if not self._check_writable():
             return False
 
         try:
-            # Convert date to match existing format (MM/DD/YYYY)
-            try:
-                from datetime import datetime
-                date_obj = datetime.strptime(expense_data.get('date', ''), '%Y-%m-%d')
-                formatted_date = date_obj.strftime('%m/%d/%Y')
-            except:
-                formatted_date = expense_data.get('date', '')
+            hm = self._header_map()
+            if hm is None:
+                return False
+            header_map, width = hm
 
-            # Prepare row data in EXACT Google Form format (matching existing data)
-            row_data = [
-                formatted_date,                          # MM/DD/YYYY format
-                expense_data.get('type_1', ''),          # 📅 日常 or ✈️ 旅行
-                expense_data.get('category_type', ''),   # 🍽️ 飲食, 👶 寶寶 etc. (exact form values)
-                expense_data.get('amount', ''),
-                expense_data.get('account', ''),
-                expense_data.get('description', ''),
-                expense_data.get('country', ''),
-                expense_data.get('location', ''),
-                expense_data.get('notes', '')
-            ]
+            row_data = [''] * width
+            for field, idx in header_map.items():
+                row_data[idx] = self._cell_value(field, expense_data.get(field, ''))
 
             logger.info(f"📝 Row data to append: {row_data}")
-
-            # Append to worksheet
-            self.worksheet.append_row(row_data)
-            logger.info(f"✅ Successfully added expense: {expense_data.get('description', '')} - NT${expense_data.get('amount', 0)}")
+            _with_retry(self.worksheet.append_row, row_data)
+            logger.info("📝 Row appended successfully to worksheet")
 
             # Clear Streamlit cache to reflect changes
             st.cache_data.clear()
-
-            # Show success message with details
-            st.success(f"✅ 成功新增支出: {expense_data.get('description', '')} - NT${expense_data.get('amount', 0):,.0f}")
-
             return True
 
         except Exception as e:
-            error_msg = str(e)
-            logger.error(f"❌ Failed to add expense: {error_msg}")
-
-            # Provide specific error guidance
-            if "403" in error_msg:
-                st.error("❌ 權限不足：請確認 Google Sheet 已與 service account 共用")
-                st.info("💡 Service account email: expense-dashboard@divine-engine-491814-c3.iam.gserviceaccount.com")
-            elif "404" in error_msg:
-                st.error("❌ 找不到工作表：請確認 Sheet ID 和 GID 正確")
-            else:
-                st.error(f"❌ 新增失敗: {error_msg}")
-
+            logger.error(f"❌ Failed to add expense: {str(e)}")
+            self._explain_write_error(e, "新增")
             return False
 
-    def update_expense(self, row_index: int, expense_data: Dict) -> bool:
+    def update_expense(self, sheet_row: int, original: Dict, updated: Dict) -> bool:
         """
-        Update an existing expense record
+        Update an existing expense record identified by its sheet row, after verifying
+        that the row still holds `original`. Only columns present in `updated` are changed.
         """
-        if not self.api_available or not self.worksheet:
-            st.warning("⚠️ 無法更新資料，API 不可用")
+        if not self._check_writable():
             return False
 
         try:
-            # Calculate actual row number (accounting for header row)
-            row_number = row_index + 2
+            hm = self._header_map()
+            if hm is None:
+                return False
+            header_map, width = hm
 
-            logger.info(f"📝 Attempting to update expense at row index {row_index} (sheet row {row_number})")
-            logger.info(f"   Updating to: {expense_data.get('description', 'N/A')} - NT${expense_data.get('amount', 0)}")
+            located = self._locate_row(sheet_row, original, header_map)
+            if located is None:
+                return False
+            row_number, current = located
+            row_number = int(row_number)
 
-            # Convert date to match existing format (MM/DD/YYYY)
-            try:
-                from datetime import datetime
-                date_obj = datetime.strptime(expense_data.get('date', ''), '%Y-%m-%d')
-                formatted_date = date_obj.strftime('%m/%d/%Y')
-            except:
-                formatted_date = expense_data.get('date', '')
+            new_row = _pad(current, width)[:width]
+            for field, value in updated.items():
+                if field not in header_map:
+                    continue
+                if field == 'amount' and _sheet_amount_value(value) is None:
+                    st.error("❌ 金額無法解析，已取消更新")
+                    return False
+                new_row[header_map[field]] = self._cell_value(field, value)
 
-            # Prepare row data in EXACT Google Form format
-            row_data = [
-                formatted_date,                          # MM/DD/YYYY format
-                expense_data.get('type_1', ''),          # 📅 日常 or ✈️ 旅行
-                expense_data.get('category_type', ''),   # 🍽️ 飲食, 👶 寶寶 etc.
-                expense_data.get('amount', ''),
-                expense_data.get('account', ''),
-                expense_data.get('description', ''),
-                expense_data.get('country', ''),
-                expense_data.get('location', ''),
-                expense_data.get('notes', '')
-            ]
-
-            # Update the row
-            self.worksheet.update(f'A{row_number}:I{row_number}', [row_data])
+            range_name = f"A{row_number}:{_col_letter(width)}{row_number}"
+            logger.info(f"📝 Updating sheet row {row_number} ({range_name}): {new_row}")
+            _with_retry(self.worksheet.update, values=[new_row], range_name=range_name)
             logger.info(f"✅ Successfully updated row {row_number} in Google Sheets")
 
-            # Clear ALL caches to ensure data refresh
             st.cache_data.clear()
-
-            # Force a small delay to ensure Google Sheets processes the update
-            import time
-            time.sleep(0.5)
-
             return True
 
         except Exception as e:
             logger.error(f"❌ Failed to update expense: {str(e)}")
-            st.error(f"更新失敗: {str(e)}")
+            self._explain_write_error(e, "更新")
             return False
 
-    def delete_expense(self, row_index: int, expense_info: dict = None) -> bool:
+    def delete_expense(self, sheet_row: int, original: Dict) -> bool:
         """
-        Delete an expense record with better tracking and confirmation
+        Delete an expense record identified by its sheet row, after verifying
+        that the row still holds `original`.
         """
-        if not self.api_available or not self.worksheet:
-            logger.warning("⚠️ Cannot delete - API not available")
+        if not self._check_writable():
             return False
 
         try:
-            # DEBUG: Let's find the actual row by searching for the content
-            target_desc = expense_info.get('description', '') if expense_info else ''
-            target_amount = str(expense_info.get('amount', '')) if expense_info else ''
+            hm = self._header_map()
+            if hm is None:
+                return False
+            header_map, _ = hm
 
-            logger.info(f"🔍 Searching for row with description '{target_desc}' and amount '{target_amount}'")
+            located = self._locate_row(sheet_row, original, header_map)
+            if located is None:
+                return False
+            row_number = int(located[0])
 
-            # Get all data to find the correct row
-            all_values = self.worksheet.get_all_values()
-            logger.info(f"📊 Total sheet rows: {len(all_values)}")
+            logger.info(f"🗑️ Deleting sheet row {row_number}: {located[1]}")
+            _with_retry(self.worksheet.delete_rows, row_number)
+            logger.info(f"✅ Successfully deleted row {row_number} from Google Sheets")
 
-            actual_row_to_delete = None
-            for i, row_data in enumerate(all_values):
-                if i == 0:  # Skip header
-                    continue
-
-                # Check if this row matches our target
-                row_desc = row_data[5] if len(row_data) > 5 else ''  # Description is usually column 6 (index 5)
-                row_amount = row_data[3] if len(row_data) > 3 else ''  # Amount is usually column 4 (index 3)
-
-                logger.info(f"📋 Row {i+1}: desc='{row_desc}', amount='{row_amount}'")
-
-                # Clean amount comparison
-                try:
-                    row_amount_clean = str(float(row_amount.replace(',', '').replace('"', '').replace('$', ''))).split('.')[0]
-                    target_amount_clean = str(float(target_amount)).split('.')[0]
-
-                    if row_desc.strip() == target_desc.strip() and row_amount_clean == target_amount_clean:
-                        actual_row_to_delete = i + 1  # +1 because sheet rows are 1-indexed
-                        logger.info(f"🎯 FOUND MATCH at sheet row {actual_row_to_delete}")
-                        break
-                except Exception as e:
-                    logger.info(f"Amount comparison failed for row {i+1}: {e}")
-
-            if actual_row_to_delete is None:
-                logger.error(f"❌ Could not find row with description '{target_desc}' and amount '{target_amount}'")
-                # Fallback to original method
-                actual_row_to_delete = row_index + 2
-                logger.warning(f"🔄 Falling back to calculated row {actual_row_to_delete}")
-
-            logger.info(f"🗑️ Attempting to delete sheet row {actual_row_to_delete}")
-
-            # Get the current row content before deletion for verification
-            try:
-                current_values = self.worksheet.row_values(actual_row_to_delete)
-                logger.info(f"📋 Row {actual_row_to_delete} content before deletion: {current_values}")
-            except Exception as e:
-                logger.warning(f"Could not read row before deletion: {e}")
-
-            # Delete the row
-            self.worksheet.delete_rows(actual_row_to_delete)
-            logger.info(f"✅ Successfully deleted row {actual_row_to_delete} from Google Sheets")
-
-            # Clear ALL caches to ensure data refresh
             st.cache_data.clear()
-
-            # Force a small delay to ensure Google Sheets processes the deletion
-            import time
-            time.sleep(1)
-
-            # Verify deletion worked by checking if row count decreased
-            try:
-                new_values = self.worksheet.get_all_values()
-                new_count = len(new_values) - 1  # Subtract header
-                logger.info(f"📊 After deletion: {new_count} data rows remain")
-            except Exception as e:
-                logger.warning(f"Could not verify deletion: {e}")
-
             return True
 
         except Exception as e:
-            error_msg = str(e)
-            logger.error(f"❌ Failed to delete expense: {error_msg}")
-            if expense_info:
-                logger.error(f"   Failed item: {expense_info.get('description', 'N/A')} - NT${expense_info.get('amount', 0)}")
-
-            # Show specific error to user
-            if "403" in error_msg:
-                st.error("❌ 權限不足：請確認 Google Sheets 權限設定")
-            elif "404" in error_msg:
+            logger.error(f"❌ Failed to delete expense: {str(e)}")
+            if "404" in str(e):
                 st.error("❌ 找不到該記錄：可能已被刪除")
             else:
-                st.error(f"❌ 刪除失敗：{error_msg}")
-                st.info("💡 請重新整理頁面後重試，或檢查該記錄是否已被刪除")
-
+                self._explain_write_error(e, "刪除")
             return False
 
     def get_status(self) -> Dict:
         """Get API status information"""
         return {
             "api_available": self.api_available,
+            "read_only": self.read_only,
             "worksheet_connected": self.worksheet is not None,
-            "sheet_id": SHEET_ID if "google_sheets" not in st.secrets else st.secrets.get("app", {}).get("sheet_id", SHEET_ID),
-            "worksheet_gid": WORKSHEET_GID
+            "sheet_id": _resolve_sheet_id(),
+            "worksheet_gid": WORKSHEET_GID,
+            "error": self.init_error,
         }
 
 
 # Global instance
 _sheets_api = None
+_last_init_attempt = 0.0
+_REINIT_INTERVAL = 60  # seconds
+
 
 def get_sheets_api() -> SheetsAPI:
     """
-    Get or create the global SheetsAPI instance
+    Get or create the global SheetsAPI instance.
+    A failed initialisation is retried (at most once a minute) when credentials exist,
+    so a transient error does not permanently disable writes.
     """
-    global _sheets_api
+    global _sheets_api, _last_init_attempt
     if _sheets_api is None:
         _sheets_api = SheetsAPI()
+        _last_init_attempt = time.monotonic()
+    elif (not _sheets_api.api_available and _secret("google_sheets")
+          and time.monotonic() - _last_init_attempt > _REINIT_INTERVAL):
+        _sheets_api.reconnect()
+        _last_init_attempt = time.monotonic()
     return _sheets_api
 
 
 @st.cache_data(ttl=60)  # Cache for 1 minute to see updates faster
-def load_expense_data() -> pd.DataFrame:
+def _load_expense_data_cached() -> pd.DataFrame:
     """
-    Cached function to load expense data
+    Cached loader. Raises on failure so a transient error is never cached as an empty frame.
     """
     api = get_sheets_api()
     return api.load_data()
+
+
+def load_expense_data() -> pd.DataFrame:
+    """
+    Load expense data (cached 60s). On failure show a warning and return the last good
+    DataFrame from session state, or an empty frame with the expected columns.
+    """
+    try:
+        df = _load_expense_data_cached()
+        try:
+            st.session_state['last_good_df'] = df
+        except Exception:
+            pass
+        return df
+    except Exception as e:
+        logger.error(f"❌ load_expense_data failed: {e}")
+        st.warning(f"⚠️ 資料載入失敗，顯示上次成功載入的資料: {e}")
+        try:
+            last = st.session_state.get('last_good_df')
+        except Exception:
+            last = None
+        if last is not None:
+            return last
+        return _empty_df()
 
 
 def refresh_data():
@@ -1104,3 +743,16 @@ def refresh_data():
     """
     st.cache_data.clear()
     logger.info("🔄 Data cache cleared")
+
+
+def reconnect():
+    """
+    Re-initialise the Google Sheets connection and clear cached data
+    """
+    global _last_init_attempt
+    api = get_sheets_api()
+    ok = api.reconnect()
+    _last_init_attempt = time.monotonic()
+    st.cache_data.clear()
+    logger.info(f"🔄 Reconnected (api_available={ok})")
+    return ok
