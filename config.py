@@ -86,22 +86,25 @@ ACCOUNTS = ["菇菇", "過兒"]
 
 # Location Hierarchy (matching your Google Form exactly)
 LOCATIONS_MAP = {
+    # Spelling follows the vocabulary already used in the sheet
+    # (no 市/縣 suffix, 臺 not 台): 臺南, 高雄, 新竹, 屏東, 南投, 苗栗, ...
     "台灣": [
-        "基隆市", "台北市", "新北市", "桃園市", "新竹市", "新竹縣",
-        "苗栗縣", "台中市", "彰化縣", "南投縣", "雲林縣", "嘉義市",
-        "嘉義縣", "台南市", "高雄市", "屏東縣", "宜蘭縣", "花蓮縣",
-        "台東縣", "澎湖縣"
+        "基隆", "臺北", "新北", "桃園", "新竹", "苗栗", "臺中", "彰化",
+        "南投", "雲林", "嘉義", "臺南", "高雄", "屏東", "宜蘭", "花蓮",
+        "臺東", "澎湖"
     ],
     "日本": ["九州", "沖繩"],
     "澳洲": ["雪梨", "墨爾本"],
     "加拿大": ["溫哥華"],
-    "韓國": ["首爾"]
+    "韓國": ["首爾"],
+    "新加坡": ["新加坡"],
+    "馬來西亞": ["吉隆坡"]
 }
 
 # Default Values
-DEFAULT_TYPE_1 = "📅 Daily"
+DEFAULT_TYPE_1 = "📅 日常"
 DEFAULT_COUNTRY = "台灣"
-DEFAULT_LOCATION = "台南市"
+DEFAULT_LOCATION = "臺南"
 DEFAULT_ACCOUNT = "菇菇"
 
 # UI Configuration
