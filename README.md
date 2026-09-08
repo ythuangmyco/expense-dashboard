@@ -46,6 +46,13 @@ The sheet needs the three optional header cells — see `DEPLOYMENT.md` Step 8 a
 
 Tests: `expense_env/bin/python -m pytest -q` (no network, no real sheet).
 
+## 📊 總覽 (overview)
+
+Phone-first: one period control, a hero total with a named comparison, today /
+per-account / 日常 vs 旅行 tiles, top-3 categories and the last 5 rows. Detail
+(full list, trend, accounts, filters, data check) sits in collapsed expanders.
+Trips are detected from 旅行 rows abroad and reachable in two taps.
+
 ## 📱 Design Principles
 
 - **Speed First**: Make expense entry faster than opening traditional apps

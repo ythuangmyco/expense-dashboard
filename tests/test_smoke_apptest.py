@@ -19,19 +19,23 @@ def test_apptest_smoke_renders_main(app_test, no_network):
     at.run()
     assert not at.exception, _exceptions(at)
 
-    # All three tabs and their page titles rendered.
+    # All three tabs rendered. 總覽 has no st.title since the §3 redesign: the
+    # period control and hero metric carry the heading instead.
     assert [t.label for t in at.tabs] == ["➕ 新增", "✏️ 編輯", "📊 總覽"]
-    assert [t.value for t in at.title] == ["➕ 新增支出", "✏️ 編輯支出", "📊 支出總覽"]
+    assert [t.value for t in at.title] == ["➕ 新增支出", "✏️ 編輯支出"]
+    assert at.metric, "總覽 hero metric missing"
 
-    # Stub API is the one the page saw (writable, not the CSV fallback).
-    assert "🟢 Google Sheets API 連線正常 - 可新增/編輯支出" in [s.value for s in at.success]
+    # Stub API is the one the page saw (writable, not the CSV fallback). Since the
+    # §3 redesign a healthy connection is a sidebar dot, not a full-width banner.
+    assert "🟢 Google Sheets API 連線正常" in [c.value for c in at.sidebar.caption]
     assert not [w.value for w in at.warning if "唯讀" in w.value]
 
     # Auth patched, not bypassed: sidebar shows the stub user.
     assert "🔓 已登入: 菇菇" in [s.value for s in at.sidebar.success]
 
-    # Dashboard rendered metrics from the fixture df.
-    assert "總支出" in [m.label for m in at.metric]
+    # Dashboard rendered the hero metric from the fixture df. Its label names the
+    # period and span ('本月支出 · 09/01–09/09') since the §3 redesign.
+    assert any("支出 · " in m.label for m in at.metric), [m.label for m in at.metric]
 
     # Nothing reached the network (Google Sheets or FX endpoints).
     assert no_network.calls == []

@@ -282,3 +282,48 @@ the columns while rows below them hold values.
 
 Exit codes: `0` done / already migrated, `1` refused (nothing written), `2` usage or
 connection error. The script never touches data rows.
+
+---
+
+## 📊 Step 9: 總覽 (overview) layout
+
+Rebuilt phone-first (390 px). Reading order, top to bottom:
+
+1. **Period** — one `st.segmented_control` (今天 / 本週 / 本月 / 本年 / 更多…).
+   `更多…` opens a popover with 上月 / 最近7天 / 最近30天 / 全部, a 自訂範圍 date
+   pair, and one row per detected trip with a `查看` button.
+2. **Hero** — total for the period, a delta against a *named* comparison window
+   (本月 → 上月同期, 本週 → 上週同期, …), and a sparkline. When the comparison
+   window has no rows the delta is dropped and the caption reads 無前期資料.
+3. **Stat strip** — 今天, per-account, and 日常 vs 旅行 (the last only when the
+   period contains 旅行 rows).
+4. **Top 3 categories** as bars, then the **last 5 transactions**.
+5. Everything else lives in collapsed expanders: 📋 本期全部交易, 📈 趨勢,
+   👤 帳戶與類型, 🔍 篩選, 🧹 資料檢查.
+
+Notes:
+
+- Filters have **no 全部 sentinel** — an empty selection means "no filter". The
+  active selection is echoed as a badge above the hero with a 清除 button.
+- Trips are derived, not stored: 旅行 rows outside 台灣 grouped by country and
+  split on gaps longer than `TRIP_GAP_DAYS`. 旅行 rows filed under 台灣
+  (flights, insurance bought at home) attach to the next trip as 行前.
+  A trip whose last row is within `TRIP_ACTIVE_GRACE_DAYS` shows as 正在旅行中.
+- Converted rows show the original amount inside 名稱 (`咖啡 · SGD 12.50`)
+  rather than in a separate column: a sixth column overflows 390 px.
+- Charts are static (`staticPlot`), so a finger drag scrolls the page instead of
+  zooming the chart.
+
+### Refreshing the offline FX rates
+
+`config.FX_FALLBACK_RATES` is the last-resort tier when every rate source fails.
+Refresh it occasionally and bump `FX_FALLBACK_DATE` — the app shows that date in
+the caption (⚠️ 離線匯率 …) so a stale table is visible rather than silent.
+
+### Verifying a change
+
+```bash
+expense_env/bin/python -m pytest -q                       # unit + AppTest
+expense_env/bin/python tests/chrome/drive_fx.py all       # FX flows in Chrome
+expense_env/bin/python tests/chrome/drive_overview.py all # 總覽 layout at 390 px
+```
