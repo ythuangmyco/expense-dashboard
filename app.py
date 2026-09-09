@@ -491,6 +491,23 @@ def period_summary(df: pd.DataFrame, start, end, filters: dict) -> dict:
         return ov.period_summary(df, start, end, filters)
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_trips(df: pd.DataFrame, today: date):
+    return ov.detect_trips(df, today)
+
+
+def detect_trips(df: pd.DataFrame, today: date):
+    """
+    overview.detect_trips, cached. It is the most expensive thing the dashboard
+    computes (~90 ms over the full sheet) and it ran on every rerun — and every
+    interaction anywhere in the app is a rerun of all three tabs.
+    """
+    try:
+        return _cached_trips(df, today)
+    except Exception:
+        return ov.detect_trips(df, today)
+
+
 def _effective_filters(period: dict, filters: dict, today: date) -> dict:
     out = dict(filters)
     if period["label"] == TRIP_LABEL and period.get("country"):
@@ -798,7 +815,7 @@ def main_dashboard():
         return
 
     today = today_local()
-    trips = ov.detect_trips(df, today)
+    trips = detect_trips(df, today)
 
     period_control(df, trips, today)
     period = current_period(df, today)

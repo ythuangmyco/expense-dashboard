@@ -213,11 +213,15 @@ def _fx_block(kp: str, country: str, gen: int, *, stored: Optional[FxStored] = N
     edit = stored is not None
     tok = gen
     on_date = on_date or today_local()
+    # Leading underscore: internal bookkeeping, deliberately outside the
+    # {kp}_fx_* widget-key namespace so it is never mistaken for widget state.
+    seen_key = f"_fxseen_{kp}_{tok}"
 
     default_ccy = COUNTRY_CURRENCY.get(country, "TWD")
     if edit and stored.currency:
         default_ccy = stored.currency            # G4: stored currency wins over 國家
     if not edit and default_ccy == "TWD":
+        st.session_state[seen_key] = "TWD"
         return None
     options = [default_ccy] + [c for c in CURRENCY_OPTIONS if c != default_ccy]
     if "TWD" not in options:
@@ -226,6 +230,7 @@ def _fx_block(kp: str, country: str, gen: int, *, stored: Optional[FxStored] = N
     currency = st.selectbox("幣別 💱", options=options, index=0, key=ccy_key,
                             help="TWD = 直接輸入台幣金額")
     if not currency or currency == "TWD":
+        st.session_state[seen_key] = "TWD"
         return None
 
     decimals, step = CURRENCY_META.get(currency, (2, 0.01))
@@ -261,9 +266,24 @@ def _fx_block(kp: str, country: str, gen: int, *, stored: Optional[FxStored] = N
     quote = st.session_state.pop(fresh_key, None)
     if not isinstance(quote, fx.Quote) or quote.currency != currency:
         quote = None
+
+    # Only reach the network when the rate is actually being asked for. Streamlit
+    # re-renders this tab on every interaction anywhere in the app, so fetching on
+    # a plain render would put the rate chain on the critical path of an unrelated
+    # click in 總覽. Asking for it means: the family picked a different country or
+    # currency just now, or typed an amount to convert. On the first render of a
+    # session the country is merely restored from last time, so we answer from the
+    # cache / 上次使用 / the offline table and stay instant; the caption says which.
+    seen = st.session_state.get(seen_key)
+    allow_network = (seen is not None and seen != currency) or orig_widget is not None
+    st.session_state[seen_key] = currency
+
     if quote is None and want_quote:
-        with st.spinner("取得匯率中…"):
-            quote = fx.get_quote(currency, on_date, df=df)
+        if allow_network:
+            with st.spinner("取得匯率中…"):
+                quote = fx.get_quote(currency, on_date, df=df)
+        else:
+            quote = fx.get_quote(currency, on_date, df=df, allow_network=False)
 
     if edit:
         rate_key = f"{kp}_fx_rate_{tok}_{currency}"

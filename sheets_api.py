@@ -865,7 +865,12 @@ def get_sheets_api() -> SheetsAPI:
     return _sheets_api
 
 
-@st.cache_data(ttl=60)  # Cache for 1 minute to see updates faster
+# 3 minutes, not 1: every expiry puts a Google Sheets round trip on the critical
+# path of the next tap, and that call is the app's main way to fail (Sheets
+# returns 503 often enough to notice). Writes clear the cache immediately and
+# 🔄 重新整理資料 is always there, so the other person's edits are never stuck
+# behind it — only unattended staleness grows.
+@st.cache_data(ttl=180)
 def _load_expense_data_cached() -> pd.DataFrame:
     """
     Cached loader. Raises on failure so a transient error is never cached as an empty frame.

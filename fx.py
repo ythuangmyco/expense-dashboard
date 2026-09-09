@@ -20,6 +20,7 @@ store is a module-level dict with identical semantics.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -212,8 +213,20 @@ def _fetch_fawaz(currency: str, on_date: date) -> Optional[Quote]:
 CHAIN = (_fetch_frankfurter, _fetch_erapi, _fetch_fawaz)
 
 
+FX_CHAIN_BUDGET_S = 6          # whole chain, not per endpoint
+
+
 def _run_chain(currency: str, on_date: date) -> Optional[Quote]:
+    """
+    Try each source in order, but give the chain as a whole a deadline: four
+    sources at FX_TIMEOUT_S each would otherwise block a rerun for 12 s when
+    every source is unreachable.
+    """
+    deadline = time.monotonic() + FX_CHAIN_BUDGET_S
     for fetch in CHAIN:
+        if time.monotonic() >= deadline:
+            logger.warning("FX chain budget spent; falling back without trying the rest")
+            return None
         q = fetch(currency, on_date)
         if q is not None:
             return q
@@ -283,7 +296,7 @@ def _fallback(store: dict, currency: str, df) -> Optional[Quote]:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
-def get_quote(currency: str, on_date=None, df=None) -> Optional[Quote]:
+def get_quote(currency: str, on_date=None, df=None, allow_network: bool = True) -> Optional[Quote]:
     """
     TWD-per-unit quote for ``currency`` on ``on_date`` (a ``date``, ``datetime``,
     ``pandas.Timestamp`` or ISO string; None/NaT mean today — see ``_as_date``).
@@ -293,6 +306,14 @@ def get_quote(currency: str, on_date=None, df=None) -> Optional[Quote]:
     * otherwise run the chain; success is stored (state "live"); failure arms
       the negative cache and returns stale / last_used / static.
     Returns None only for an unknown currency with no data anywhere.
+
+    ``allow_network=False`` answers from cache / 上次使用 / the static table only.
+    Streamlit re-runs every tab on every interaction, so the 新增 tab's card is
+    re-rendered when the family is merely switching a period in 總覽. Fetching
+    there would put the whole rate chain on the critical path of an unrelated
+    click — seconds of blocking on a cold cache, which reads as "the app will
+    not connect". Callers pass True only when the rate is actually being asked
+    for (currency changed, an amount typed, or ↻ pressed).
     """
     code = (currency or "").upper()
     if code in ("", "TWD"):
@@ -308,6 +329,9 @@ def get_quote(currency: str, on_date=None, df=None) -> Optional[Quote]:
 
     neg_at = store["neg"].get(k)
     if neg_at is not None and now - neg_at < timedelta(minutes=FX_NEG_CACHE_MIN):
+        return _fallback(store, code, df)
+
+    if not allow_network:
         return _fallback(store, code, df)
 
     q = _run_chain(code, on_date)

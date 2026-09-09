@@ -64,10 +64,15 @@ def _edit_script(df):
 @pytest.fixture
 def quote_calls(monkeypatch):
     """fx.get_quote -> fixed live Quote; every call recorded as (currency, on_date)."""
-    calls = []
+    class Calls(list):
+        """(currency, on_date) per call; .allow_network records the flag."""
 
-    def fake_get_quote(currency, on_date=None, df=None):
+    calls = Calls()
+    calls.allow_network = []
+
+    def fake_get_quote(currency, on_date=None, df=None, allow_network=True):
         calls.append((currency, on_date))
+        calls.allow_network.append(allow_network)
         return fx.Quote(currency, MID.get(currency, Decimal("1.000000")), TODAY,
                         "frankfurter", "live", now_local())
 
@@ -718,3 +723,33 @@ def test_edit_generation_bump_clears_fx_keys(harness, quote_calls):
     _run(at)
     assert not [k for k in _keys(at) if k.startswith("edit_g0_")]
     assert at.session_state["edit_form_gen"] == 1
+
+
+def test_plain_rerun_with_foreign_country_does_not_fetch(harness, quote_calls, no_network):
+    """
+    Streamlit re-renders every tab on every interaction. With 國家 left on a
+    foreign country from a past trip, an unrelated click elsewhere in the app
+    must not put the rate chain on the critical path — that is what made the app
+    feel like it could not connect.
+    """
+    at, api = harness("add")
+    at.selectbox(key="add_country").set_value("新加坡")
+    _run(at)
+    assert quote_calls, "picking a country is a deliberate ask: it should fetch"
+    assert quote_calls.allow_network[-1] is True
+
+    before = len(quote_calls)
+    for _ in range(3):                      # stand-ins for unrelated reruns
+        _run(at)
+    assert all(flag is False for flag in quote_calls.allow_network[before:]), (
+        "a plain rerun asked to go to the network")
+
+
+def test_typing_an_amount_fetches(harness, quote_calls, no_network):
+    """Once an amount is being converted the rate is genuinely needed."""
+    at, api = harness("add")
+    at.selectbox(key="add_country").set_value("新加坡")
+    _run(at)
+    at.number_input(key="add_fx_amount_0").set_value(12.5)
+    _run(at)
+    assert quote_calls.allow_network[-1] is True
