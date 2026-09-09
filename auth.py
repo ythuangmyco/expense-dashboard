@@ -164,10 +164,15 @@ def _emit_cookie_js(value: str, max_age: int = None, reload: bool = True):
     """
     max_age_part = "" if max_age is None else f"; Max-Age={int(max_age)}"
     reload_part = "window.parent.location.reload();" if reload else ""
+    is_delete = "true" if max_age == 0 else "false"
     js = f"""
 <script>
 (function() {{
-  var secure = (window.location.protocol === "https:") ? "; Secure" : "";
+  // The component runs in a srcdoc iframe whose own location is "about:srcdoc",
+  // so the protocol has to come from the app document or Secure is never set.
+  var proto = window.location.protocol;
+  try {{ proto = window.parent.location.protocol; }} catch (e) {{}}
+  var secure = (proto === "https:") ? "; Secure" : "";
   var cookie = "{COOKIE_NAME}={value}{max_age_part}; Path=/; SameSite=Lax" + secure;
   var ok = false;
   try {{
@@ -183,7 +188,71 @@ def _emit_cookie_js(value: str, max_age: int = None, reload: bool = True):
     console.error("expense_auth: iframe cookie write failed", e);
   }}
   if (!ok) {{ console.error("expense_auth: cookie could not be written"); }}
+
+  // Mirror the token into localStorage. A cookie written by JavaScript is the
+  // least durable store a browser has: WebKit (every iPhone browser) caps it at
+  // 7 days and drops it under storage pressure. localStorage survives that, and
+  // restore_auth_cookie_js() below turns it back into a cookie on the next load.
+  try {{
+    var store = null;
+    try {{ store = window.parent.localStorage; }} catch (e) {{ store = window.localStorage; }}
+    if (store) {{
+      if ({is_delete}) {{ store.removeItem("{COOKIE_NAME}"); }}
+      else {{ store.setItem("{COOKIE_NAME}", "{value}"); }}
+    }}
+  }} catch (e) {{
+    console.error("expense_auth: localStorage mirror failed", e);
+  }}
   {reload_part}
+}})();
+</script>
+"""
+    components.html(js, height=0)
+
+
+def restore_auth_cookie_js():
+    """
+    Self-healing: put the localStorage copy of the token back into the cookie.
+
+    The cookie is the only thing ``st.context.cookies`` can see, but it is also
+    the first thing a browser throws away. Whenever the cookie is gone while the
+    localStorage copy is still valid, write it back and reload once — the next
+    Streamlit session then authenticates normally instead of showing the login
+    screen. Rendered only when we are about to ask for the PIN, so an ordinary
+    authenticated run costs nothing.
+
+    The client-side expiry check is an optimisation to avoid a pointless reload;
+    the signature is always verified again on the server.
+    """
+    js = f"""
+<script>
+(function() {{
+  var doc, store, ses;
+  try {{ doc = window.parent.document; store = window.parent.localStorage; ses = window.parent.sessionStorage; }}
+  catch (e) {{ doc = document; store = window.localStorage; ses = window.sessionStorage; }}
+  if (!doc || !store) {{ return; }}
+  try {{
+    if (doc.cookie.indexOf("{COOKIE_NAME}=") !== -1) {{ return; }}   // cookie is fine
+    var token = store.getItem("{COOKIE_NAME}");
+    if (!token) {{ return; }}                                        // nothing to restore
+
+    var payload = token.split(".")[0].replace(/-/g, "+").replace(/_/g, "/");
+    payload += "===".slice((payload.length + 3) % 4);
+    var exp = JSON.parse(atob(payload)).exp;
+    if (!exp || exp * 1000 <= Date.now()) {{                         // expired: stop retrying
+      store.removeItem("{COOKIE_NAME}");
+      return;
+    }}
+    if (ses && ses.getItem("{COOKIE_NAME}_restoring")) {{ return; }} // one reload per page load
+    if (ses) {{ ses.setItem("{COOKIE_NAME}_restoring", "1"); }}
+
+    var secure = (doc.location.protocol === "https:") ? "; Secure" : "";
+    doc.cookie = "{COOKIE_NAME}=" + token + "; Max-Age=" + Math.floor(exp - Date.now() / 1000) +
+                 "; Path=/; SameSite=Lax" + secure;
+    window.parent.location.reload();
+  }} catch (e) {{
+    console.error("expense_auth: restore failed", e);
+  }}
 }})();
 </script>
 """
@@ -280,6 +349,11 @@ def password_screen():
     """
     Display password entry screen with family-friendly PIN input and user selection
     """
+    # Before asking for the PIN, try to put a surviving localStorage token back
+    # into the cookie. When that works the page reloads and this screen is never
+    # actually used — that is the whole point.
+    restore_auth_cookie_js()
+
     st.markdown("""
     <div style="text-align: center; padding: 2rem;">
         <h2>🔒 家庭支出追蹤</h2>

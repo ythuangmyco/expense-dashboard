@@ -327,3 +327,34 @@ expense_env/bin/python -m pytest -q                       # unit + AppTest
 expense_env/bin/python tests/chrome/drive_fx.py all       # FX flows in Chrome
 expense_env/bin/python tests/chrome/drive_overview.py all # 總覽 layout at 390 px
 ```
+
+---
+
+## 🔐 Step 10: Why login survives (and when it will not)
+
+Streamlit has no server-side set-cookie API, so "記住我" is a signed token written
+from JavaScript. A JS-set cookie is the least durable thing a browser stores:
+**WebKit — every browser on iPhone — caps it at 7 days** and drops it under
+storage pressure, which is what made logins feel random.
+
+The token is therefore kept in two places:
+
+| Store | Written by | Read by | Survives |
+|---|---|---|---|
+| `expense_auth` cookie | JS on login / each visit | `st.context.cookies` (the only thing Python can see) | until the browser purges it |
+| `localStorage["expense_auth"]` | the same JS | `restore_auth_cookie_js()` in the browser | a cookie purge |
+
+On any page load where the cookie is missing but the localStorage copy is still
+valid, the app writes the cookie back and reloads once — the login screen is
+never reached. The copy is checked for expiry client-side to avoid a pointless
+reload, and the signature is always re-verified on the server. A `sessionStorage`
+flag makes it at most one reload per page load, so a rejected token cannot loop.
+
+Logout clears **both** stores; otherwise the backup would silently log you in again.
+
+Still logged out if: the token is genuinely older than 30 days, someone clears
+site data, the browser is in private mode, or the device has not opened the app
+for long enough that WebKit evicts script-writable storage (7 days of no visits).
+
+Regression suite: `expense_env/bin/python tests/chrome/drive_auth.py all`
+(purge the cookie → still logged in; logout wins; reloads never bounce).
