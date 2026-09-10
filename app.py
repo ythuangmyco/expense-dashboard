@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 
 # Import our modules
 import overview as ov
@@ -875,8 +876,35 @@ def edit_expense_page():
     edit_expense_form(df)
 
 
+SW_REGISTER_JS = """
+<script>
+(function() {
+  try {
+    var nav = window.parent.navigator;
+    if (nav && nav.serviceWorker) { nav.serviceWorker.register('/sw.js', {scope: '/'}); }
+  } catch (e) { /* not installable here; the app works the same */ }
+})();
+</script>
+"""
+
+
+def register_service_worker():
+    """
+    Register /sw.js so Android offers a real install rather than a bookmark.
+
+    The manifest link and the worker file are put in place by
+    scripts/install_pwa_assets.py (wired into the systemd unit), because a
+    manifest added to the DOM after load is ignored — Chrome reports no manifest
+    at all. Only the registration call has to come from the page, and it is a
+    no-op wherever /sw.js is not served.
+    """
+    components.html(SW_REGISTER_JS, height=0)
+
+
 def main():
     """Main application"""
+    register_service_worker()
+
     # Authentication check
     if not check_password():
         password_screen()

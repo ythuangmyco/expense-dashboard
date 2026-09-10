@@ -1,0 +1,14 @@
+[server]
+# Serves ./static at /app/static. The installable-app assets are additionally
+# copied to Streamlit's own static dir (root-served) by
+# scripts/install_pwa_assets.py, because a manifest and service worker must live
+# at the site root to count.
+enableStaticServing = true
+headless = true
+
+[browser]
+gatherUsageStats = false
+
+# No [theme] section on purpose: setting one pins Streamlit to the light theme
+# and the dashboard stops following the phone's dark mode. The app's colours
+# come from its own CSS, and the Android title-bar colour from the manifest.
