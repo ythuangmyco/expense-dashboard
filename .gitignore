@@ -12,6 +12,8 @@ ENV/
 
 # Streamlit
 .streamlit/secrets.toml
+.streamlit/secrets*.toml
+.streamlit/secrets.toml.*
 
 # Google API Credentials
 service-account-key.json

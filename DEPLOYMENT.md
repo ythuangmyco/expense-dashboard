@@ -358,3 +358,66 @@ for long enough that WebKit evicts script-writable storage (7 days of no visits)
 
 Regression suite: `expense_env/bin/python tests/chrome/drive_auth.py all`
 (purge the cookie → still logged in; logout wins; reloads never bounce).
+
+---
+
+## 🏠 Step 11: Self-hosting on the lab workstation (huangliu.family)
+
+Why: Streamlit Community Cloud idles a free app after a quiet spell, and waking
+it takes about half a minute of looking broken. Self-hosting removes that, and
+Cloudflare terminates HTTPS so the login cookie finally gets its `Secure` flag.
+
+### What runs
+
+| Piece | Where |
+|---|---|
+| App | `huangliu-expense.service` (systemd), `Restart=always`, enabled at boot |
+| Bind address | **127.0.0.1:8501 only** — never on the lab LAN; the tunnel reaches it locally |
+| Public entry | the machine's existing `cloudflared` tunnel (already serves the LIMS and Specify) |
+| Credentials | `.streamlit/secrets.toml`, mode 600, git-ignored |
+
+```bash
+sudo systemctl status huangliu-expense      # is it up
+sudo systemctl restart huangliu-expense     # after a git pull
+journalctl -u huangliu-expense -f           # logs
+```
+
+`.streamlit/secrets.toml` holds the real service account, the sheet id and gid,
+and a dedicated `AUTH_COOKIE_SECRET`. That last one matters: with it, the cookie
+no longer derives from `FAMILY_PIN`, so changing the PIN stops logging everyone
+out. Changing `AUTH_COOKIE_SECRET` itself does log everyone out.
+
+### Publishing it
+
+The tunnel config gains one rule (the existing hostnames are untouched):
+
+```yaml
+  - hostname: huangliu.family
+    service: http://localhost:8501
+  - service: http_status:404        # keep the catch-all last
+```
+
+Then the DNS record, which the tunnel can create itself:
+
+```bash
+cloudflared tunnel route dns <tunnel-id> huangliu.family
+sudo cloudflared --config /etc/cloudflared/config.yml tunnel ingress validate
+sudo systemctl reload cloudflared        # or restart
+```
+
+Prerequisite: `huangliu.family` must be registered and added as a zone in the
+same Cloudflare account as the tunnel, otherwise the DNS step has nothing to
+write to.
+
+### Worth adding
+
+Put **Cloudflare Access** in front of the hostname (free at household size).
+Today the family PIN is the only thing between the open internet and the
+records; Access means an unapproved visitor never reaches the app at all.
+
+### Trade-offs, honestly
+
+Power or network loss at the lab takes the app down, and nobody else is on call.
+The service restarts itself and comes back after a reboot, but the machine is
+shared. Keep the Streamlit Cloud deployment as a fallback until this has proven
+itself.
