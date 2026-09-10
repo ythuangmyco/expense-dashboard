@@ -1,0 +1,3 @@
+# The repo root ignores *.json to keep service-account keys out. manifest.json
+# is a public asset and must ship, or a fresh deploy has no installable app.
+!manifest.json
